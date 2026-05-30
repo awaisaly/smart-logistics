@@ -132,6 +132,19 @@ pnpm install
 cp .env.example .env   # then fill in secrets (e.g. GROQ_API_KEY)
 ```
 
+#### Environment variables
+
+`.env.example` documents the full set; copy it to `.env` and adjust as needed. The ones you are most likely to touch:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `GROQ_API_KEY` | — | Required for the AI assistant and live recommendations |
+| `DEMO_PASSWORD` | — | Password for the seeded demo accounts |
+| `VITE_API_BASE_URL` | `http://localhost:4000` | Base URL the frontend uses to reach the API gateway |
+| `FRONTEND_PORT` | `5173` | Port the Vite dev server binds to |
+
+> Note: `VITE_*` variables are read by Vite at build/dev-server start, so restart the frontend after changing them.
+
 ### Run everything (infra + all dev servers)
 
 ```bash
