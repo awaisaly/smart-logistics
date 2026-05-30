@@ -1,0 +1,27 @@
+{
+  "name": "@smartlogistics/api-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "echo 'lint api-gateway'",
+    "test": "echo 'no tests yet'",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@fastify/cors": "^8.5.0",
+    "@fastify/http-proxy": "^9.5.0",
+    "@fastify/rate-limit": "^9.1.0",
+    "@smartlogistics/shared-config": "workspace:*",
+    "@smartlogistics/shared-middleware": "workspace:*",
+    "fastify": "^4.28.1"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3"
+  }
+}
