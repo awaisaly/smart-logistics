@@ -1,0 +1,16 @@
+{
+  "name": "@smartlogistics/shared-errors",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "dev": "tsc -w -p tsconfig.json",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "echo 'lint shared-errors'",
+    "test": "echo 'no tests for shared-errors'",
+    "clean": "rm -rf dist"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "@smartlogistics/shared-middleware",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "dev": "tsc -w -p tsconfig.json",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "echo 'lint shared-middleware'",
+    "test": "echo 'no tests for shared-middleware'",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@fastify/rate-limit": "^9.1.0",
+    "@smartlogistics/shared-errors": "workspace:*",
+    "@smartlogistics/shared-types": "workspace:*",
+    "fastify": "^4.28.1",
+    "pino": "^9.7.0",
+    "prom-client": "^15.1.3"
+  }
+}
