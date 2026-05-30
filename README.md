@@ -125,6 +125,37 @@ flowchart TB
 - pnpm 10 (`corepack enable` or `npm i -g pnpm`)
 - Docker + Docker Compose
 
+### First-time setup (clone → running with demo data)
+
+For a teammate cloning the repo for the first time:
+
+```bash
+git clone git@github.com:awaisaly/smart-logistics.git
+cd smart-logistics
+
+pnpm install
+cp .env.example .env          # defaults work out of the box; set GROQ_API_KEY for AI features
+
+pnpm up                       # start infra (databases, Kafka, Temporal, Redis, observability)
+# wait ~30–60s for the databases to become healthy, then:
+pnpm seed                     # load ~90 days of demo data into all stores
+
+pnpm dev                      # run all services + the frontend (hot reload)
+```
+
+Then open <http://localhost:5173> and log in with a seeded account — e.g.
+`awais.ali@smartlogistics.example` and the `DEMO_PASSWORD` value from your `.env`.
+
+**How it fits together:** the app services in `docker-compose.yml` are behind a
+`services` Compose profile, so `pnpm up` (`docker compose up -d`) starts **only the
+infrastructure** in Docker. The application code (9 services + gateway + frontend)
+runs **on your host** via Turborepo. The `pnpm seed` script also runs on the host and
+connects to the Dockerized databases through their published ports
+(`localhost:5433–5441`, Mongo `localhost:27018`) — so the databases must be up before
+seeding, but the services do not need to be running.
+
+> Re-running `pnpm seed` is **destructive**: it truncates and repopulates every store.
+
 ### Install & configure
 
 ```bash
