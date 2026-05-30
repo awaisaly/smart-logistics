@@ -1,6 +1,6 @@
 import React from "react";
 import { fetchJson, withRange } from "@/lib/api";
-import { toNumber, formatCompact } from "@/lib/format";
+import { toNumber, formatCompact, formatDateTime, formatTime } from "@/lib/format";
 import { useDateRange } from "@/lib/date-range";
 import {
   PageCard,
@@ -120,7 +120,7 @@ export function EventsPage(): JSX.Element {
               <div style={{ maxHeight: 300, overflow: "auto" }}>
                 {events.map((e, i) => (
                   <div key={i} className="sl-kafka-row" style={{ padding: "7px 14px", borderBottom: "0.5px solid var(--line)", fontSize: 11.5 }}>
-                    <span className="mono" style={{ color: "var(--mute)" }}>{String(e.t ?? "")}</span>
+                    <span className="mono" style={{ color: "var(--mute)" }} title={formatDateTime(e.created_at ?? e.t)}>{formatTime(e.created_at ?? e.t)}</span>
                     <span className="mono" style={{ color: "var(--info)" }}>{String(e.topic ?? "")}</span>
                     <span className="mono" style={{ color: "var(--ink)" }}>{String(e.key ?? "")}</span>
                     <span className="mono" style={{ color: "var(--mute)", textAlign: "right" }}>{String(e.lag ?? "")}</span>
@@ -175,7 +175,7 @@ export function EventsPage(): JSX.Element {
             <PageCard title="Dead-letter queue" sub="messages that failed all retries" padding={0} bodyStyle={{ padding: 0 }}>
               {dlq.map((d, i) => (
                 <div key={i} style={{ padding: "12px 16px", borderBottom: i < dlq.length - 1 ? "0.5px solid var(--line)" : "none", display: "flex", gap: 12, alignItems: "flex-start" }}>
-                  <span className="mono" style={{ fontSize: 11, color: "var(--mute)", minWidth: 50 }}>{String(d.t ?? d.received ?? "")}</span>
+                  <span className="mono" style={{ fontSize: 11, color: "var(--mute)", minWidth: 50 }} title={formatDateTime(d.created_at ?? d.t ?? d.received)}>{formatTime(d.created_at ?? d.t ?? d.received)}</span>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4, flexWrap: "wrap" }}>
                       <span className="mono" style={{ fontSize: 11.5, color: "var(--info)" }}>{String(d.topic ?? d.source ?? "")}</span>
@@ -192,7 +192,7 @@ export function EventsPage(): JSX.Element {
                 dense
                 rows={replays}
                 columns={[
-                  { key: "created_at", label: "When", mono: true, render: (r) => <span style={{ color: "var(--mute)" }}>{String(r.range ?? r.created_at ?? "").slice(0, 24)}</span> },
+                  { key: "created_at", label: "When", mono: true, render: (r) => <span style={{ color: "var(--mute)" }}>{formatDateTime(r.created_at ?? r.range)}</span> },
                   { key: "initiator", label: "By", render: (r) => <span className="mono" style={{ color: "var(--info)" }}>{String(r.initiator ?? "")}</span> },
                   { key: "items", label: "Replayed", align: "right", mono: true },
                   { key: "status", label: "Result", render: (r) => <PrototypePill tone={r.status === "completed" ? "ok" : r.status === "failed" ? "err" : "warn"} size="sm">{String(r.status ?? "")}</PrototypePill> },

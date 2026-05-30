@@ -1,6 +1,6 @@
 import React from "react";
 import { fetchJson, withRange } from "@/lib/api";
-import { toNumber, formatCompact } from "@/lib/format";
+import { toNumber, formatCompact, formatTime } from "@/lib/format";
 import { useDateRange } from "@/lib/date-range";
 import {
   PageCard,
@@ -99,7 +99,7 @@ export function ObservabilityPage(): JSX.Element {
                   onRowClick={(r) => setSelected(r)}
                   rows={traces}
                   columns={[
-                    { key: "ts", label: "When", mono: true, render: (r) => <span style={{ color: "var(--mute)" }}>{String(r.ts ?? "").slice(11, 19)}</span> },
+                    { key: "ts", label: "When", mono: true, render: (r) => <span style={{ color: "var(--mute)" }}>{formatTime(r.ts)}</span> },
                     { key: "id", label: "Trace ID", mono: true, render: (r) => <span style={{ color: "var(--info)" }}>{String(r.id ?? "")}</span> },
                     { key: "span", label: "Endpoint", mono: true },
                     { key: "latencyMs", label: "Duration", align: "right", mono: true, render: (r) => <span style={{ color: toNumber(r.latencyMs) > 500 ? "var(--err)" : "var(--ink-2)" }}>{toNumber(r.latencyMs)}ms</span> },

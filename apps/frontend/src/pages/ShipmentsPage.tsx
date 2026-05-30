@@ -1,6 +1,6 @@
 import React from "react";
 import { fetchJson, postJson, withRange } from "@/lib/api";
-import { toNumber, formatCompact } from "@/lib/format";
+import { toNumber, formatCompact, formatDateTime, formatTime } from "@/lib/format";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
 import { useDateRange } from "@/lib/date-range";
 import {
@@ -58,9 +58,8 @@ const SHIPMENT_ACTIONS = [
 type ShipmentActionId = (typeof SHIPMENT_ACTIONS)[number]["id"];
 
 function formatAuditTime(value?: string): string {
-  const raw = String(value ?? "");
-  if (!raw) return "—";
-  return raw.replace("T", " ").slice(0, 19);
+  // Render the UTC audit timestamp in the browser's local timezone.
+  return formatDateTime(value);
 }
 
 const ACTIVE_STATUSES = new Set(["created", "dispatched", "in_transit", "in-transit", "picked", "out_for_delivery", "out-for-delivery", "attempted"]);
@@ -610,7 +609,7 @@ export function ShipmentDetail({
                 }}
               >
                 <span className="mono" style={{ fontSize: 11, color: "var(--mute)", paddingTop: 2 }}>
-                  {String(t.t ?? "").slice(11, 19) || String(t.t ?? "")}
+                  {formatTime(t.t)}
                 </span>
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 4 }}>
                   <span

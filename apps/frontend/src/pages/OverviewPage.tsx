@@ -1,6 +1,6 @@
 import React from "react";
 import { fetchJson, withRange } from "@/lib/api";
-import { toNumber, formatCompact } from "@/lib/format";
+import { toNumber, formatCompact, formatDateTime, formatTime } from "@/lib/format";
 import { useCurrentUser, useTimeGreeting } from "@/hooks/useCurrentUser";
 import { useDateRange } from "@/lib/date-range";
 import { DateRangeFilter } from "@/components";
@@ -181,7 +181,7 @@ export function OverviewPage(): JSX.Element {
                 const payload = String(row.payload ?? "");
                 return (
                   <div key={String(row.id ?? i)} className="sl-event-row">
-                    <span className="mono" style={{ color: "var(--mute)" }} title={String(row.t ?? "")}>{String(row.t ?? "")}</span>
+                    <span className="mono" style={{ color: "var(--mute)" }} title={formatDateTime(row.created_at ?? row.t)}>{formatTime(row.created_at ?? row.t)}</span>
                     <span className="mono" style={{ color: "var(--info)" }} title={String(row.topic ?? "")}>{String(row.topic ?? "")}</span>
                     <span style={{ color: "var(--ink-2)" }} title={key ? `${key} · ${payload}` : payload}>
                       {key && <span className="mono" style={{ color: "var(--ink)" }}>{key}</span>}

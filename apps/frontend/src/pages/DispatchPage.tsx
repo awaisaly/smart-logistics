@@ -1,6 +1,6 @@
 import React from "react";
 import { fetchJson, postJson, withRange } from "@/lib/api";
-import { toNumber, formatCompact } from "@/lib/format";
+import { toNumber, formatCompact, formatDateTime } from "@/lib/format";
 import { DISPATCH_STEPS } from "@/lib/constants";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
 import { useDateRange } from "@/lib/date-range";
@@ -419,7 +419,7 @@ export function DispatchRunInspector({
             <span className="mono" style={{ color: "var(--info)" }}>{workflow.id}</span>
           </div>
           <div style={{ fontSize: 11, color: "var(--mute)" }}>
-            {String(workflow.type ?? "")} · {String(workflow.shipment ?? "")} · started {String(workflow.started ?? "")}
+            {String(workflow.type ?? "")} · {String(workflow.shipment ?? "")} · started {formatDateTime(workflow.started)}
           </div>
         </div>
         <StatusPill status={status} />
