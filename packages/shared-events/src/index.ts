@@ -84,8 +84,23 @@ export async function startConsumer(opts: {
   topics: string[];
   eachMessage: (message: ConsumerMessage) => Promise<void>;
 }): Promise<Consumer | null> {
+  // Tolerate a few transient crashes, then stop the restart loop so an
+  // unreachable broker doesn't spam the logs every ~300ms forever.
+  const MAX_CRASH_RESTARTS = 3;
+  let crashCount = 0;
   try {
-    const consumer = await createConsumer(opts.clientId, opts.brokers, opts.groupId);
+    const consumer = await createConsumer(opts.clientId, opts.brokers, opts.groupId, {
+      retries: 3,
+      restartOnFailure: async (err) => {
+        crashCount += 1;
+        if (crashCount <= MAX_CRASH_RESTARTS) return true;
+        console.error(
+          `[kafka] consumer ${opts.groupId} giving up after ${crashCount} crashes (last: ${err.message}); ` +
+            `Kafka unreachable — event processing disabled for this process.`
+        );
+        return false;
+      }
+    });
     for (const topic of opts.topics) {
       await consumer.subscribe({ topic, fromBeginning: false });
     }
