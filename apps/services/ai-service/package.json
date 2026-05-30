@@ -1,0 +1,35 @@
+{
+  "name": "@smartlogistics/ai-service",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "echo 'lint ai-service'",
+    "test": "echo 'no tests yet'",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@ai-sdk/groq": "^3.0.39",
+    "@langchain/anthropic": "^0.3.16",
+    "@langchain/core": "^0.3.57",
+    "@langchain/openai": "^0.4.9",
+    "@qdrant/js-client-rest": "^1.14.0",
+    "@smartlogistics/shared-events": "workspace:*",
+    "@smartlogistics/shared-middleware": "workspace:*",
+    "ai": "^6.0.191",
+    "dotenv": "^17.4.2",
+    "fastify": "^4.28.1",
+    "kafkajs": "^2.2.4",
+    "pg": "^8.21.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.20.0",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3"
+  }
+}
