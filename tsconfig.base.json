@@ -1,0 +1,32 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "baseUrl": ".",
+    "paths": {
+      "@smartlogistics/shared-config": ["packages/shared-config/src/index.ts"],
+      "@smartlogistics/shared-errors": ["packages/shared-errors/src/index.ts"],
+      "@smartlogistics/shared-events": ["packages/shared-events/src/index.ts"],
+      "@smartlogistics/shared-middleware": ["packages/shared-middleware/src/index.ts"],
+      "@smartlogistics/shared-types": ["packages/shared-types/src/index.ts"]
+    },
+    "lib": [
+      "ES2022"
+    ],
+    "strict": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "declaration": true,
+    "sourceMap": true,
+    "types": [
+      "node"
+    ]
+  },
+  "exclude": [
+    "node_modules",
+    "dist"
+  ]
+}

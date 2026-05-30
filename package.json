@@ -1,0 +1,33 @@
+{
+  "name": "smart-logistics",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@10.12.4",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm run up && turbo run dev --parallel --concurrency=100",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "smoke": "sh ./scripts/smoke-check.sh",
+    "typecheck": "turbo run typecheck",
+    "seed": "tsx scripts/seed.ts",
+    "up": "docker compose up -d",
+    "down": "docker compose down",
+    "clean": "turbo run clean"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.19",
+    "@types/pg": "^8.20.0",
+    "dotenv": "^17.4.2",
+    "mongodb": "^7.2.0",
+    "pg": "^8.21.0",
+    "tsx": "^4.22.3",
+    "turbo": "^2.9.14",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

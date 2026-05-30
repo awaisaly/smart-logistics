@@ -1,0 +1,31 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# builds
+dist/
+build/
+.turbo/
+coverage/
+*.tsbuildinfo
+
+# env
+.env
+.env.local
+.env.*.local
+
+# logs
+*.log
+logs/
+
+# editor and OS
+.DS_Store
+.idea/
+.vscode/
+
+# generated assets
+tmp/
+.cache/
+
+# legacy prototype
+prototype/

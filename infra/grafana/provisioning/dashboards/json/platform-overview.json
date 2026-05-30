@@ -1,0 +1,18 @@
+{
+  "id": null,
+  "title": "SmartLogistics Platform Overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Service Health (placeholder)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": []
+    }
+  ],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "timezone": "browser",
+  "refresh": "10s"
+}

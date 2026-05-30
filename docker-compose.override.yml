@@ -1,0 +1,55 @@
+services:
+  api-gateway:
+    volumes:
+      - ./apps/services/api-gateway:/app
+    command: sh -c "pnpm install --frozen-lockfile=false && pnpm dev"
+
+  user-service:
+    volumes:
+      - ./apps/services/user-service:/app
+    command: sh -c "pnpm install --frozen-lockfile=false && pnpm dev"
+
+  shipment-service:
+    volumes:
+      - ./apps/services/shipment-service:/app
+    command: sh -c "pnpm install --frozen-lockfile=false && pnpm dev"
+
+  warehouse-service:
+    volumes:
+      - ./apps/services/warehouse-service:/app
+    command: sh -c "pnpm install --frozen-lockfile=false && pnpm dev"
+
+  courier-service:
+    volumes:
+      - ./apps/services/courier-service:/app
+    command: sh -c "pnpm install --frozen-lockfile=false && pnpm dev"
+
+  dispatch-service:
+    volumes:
+      - ./apps/services/dispatch-service:/app
+    command: sh -c "pnpm install --frozen-lockfile=false && pnpm dev"
+
+  tracking-service:
+    volumes:
+      - ./apps/services/tracking-service:/app
+    command: sh -c "pnpm install --frozen-lockfile=false && pnpm dev"
+
+  notification-service:
+    volumes:
+      - ./apps/services/notification-service:/app
+    command: sh -c "pnpm install --frozen-lockfile=false && pnpm dev"
+
+  analytics-service:
+    volumes:
+      - ./apps/services/analytics-service:/app
+    command: sh -c "pnpm install --frozen-lockfile=false && pnpm dev"
+
+  ai-service:
+    volumes:
+      - ./apps/services/ai-service:/app
+    command: sh -c "pnpm install --frozen-lockfile=false && pnpm dev"
+
+  frontend:
+    volumes:
+      - ./apps/frontend:/app
+    command: sh -c "pnpm install --frozen-lockfile=false && pnpm dev --host 0.0.0.0 --port 5173"
