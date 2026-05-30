@@ -17,8 +17,7 @@ import { useCurrentUser } from "@/hooks/useCurrentUser";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import { canAccessPage, defaultRouteForRole, pageIdForPath, pagesForRole } from "@/lib/permissions";
 import { DateRangeProvider } from "@/lib/date-range";
-
-const API_BASE = "http://localhost:4000";
+import { API_BASE } from "@/lib/api";
 
 type NavItem = {
   to: string;
