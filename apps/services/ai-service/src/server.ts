@@ -4,7 +4,8 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Load the workspace-root .env so local dev (tsx watch) picks up GROQ_API_KEY etc.
-loadDotenv({ path: path.resolve(__dirname, "../../../../.env"), quiet: true });
+// override:true so edits to .env win over stale/ambient values across tsx-watch reloads.
+loadDotenv({ path: path.resolve(__dirname, "../../../../.env"), quiet: true, override: true });
 
 import Fastify from "fastify";
 import { z } from "zod";
@@ -19,6 +20,15 @@ import { startEmbeddingTriggerConsumer } from "./consumers/embedding-trigger.con
 
 const app = Fastify({ logger: buildLogger("ai-service") });
 setupMetrics(app, "ai-service");
+
+// Track the last time a real client touched the service. The scheduled
+// suggestions refresh (which calls Groq) only runs while the app is in active
+// use, so an idle dev instance doesn't burn the Groq daily token quota.
+let lastClientActivityAt = Date.now();
+app.addHook("onRequest", async (req) => {
+  if (req.url === "/health" || req.url.startsWith("/metrics")) return;
+  lastClientActivityAt = Date.now();
+});
 const pool = new Pool({
   connectionString:
     process.env.DATABASE_URL ??
@@ -491,6 +501,10 @@ setTimeout(() => {
   void triggerRefresh().catch(() => undefined);
 }, 4000);
 
+// Skip scheduled refreshes when no client has interacted recently — this keeps
+// recommendations live during active use without spending Groq tokens while idle.
+const SUGGESTIONS_IDLE_MS = Math.max(SUGGESTIONS_REFRESH_MS * 5, 5 * 60_000);
 setInterval(() => {
+  if (Date.now() - lastClientActivityAt > SUGGESTIONS_IDLE_MS) return;
   void triggerRefresh().catch(() => undefined);
 }, SUGGESTIONS_REFRESH_MS).unref();
