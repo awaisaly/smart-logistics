@@ -1,0 +1,54 @@
+// dispatch-service data model. Mapped to existing snake_case tables.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model DispatchWorkflow {
+  id        String   @id
+  type      String
+  shipment  String
+  started   String
+  duration  String
+  status    String
+  step      String
+  retries   Int      @default(0)
+  error     String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("dispatch_workflows")
+}
+
+model DispatchFailureMode {
+  id        String   @id
+  kind      String
+  count     Int      @default(0)
+  trend     String   @default("flat")
+  samples   Json     @default("[]")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("dispatch_failure_modes")
+}
+
+model DispatchWorkflowAudit {
+  id             Int      @id @default(autoincrement())
+  workflowId     String   @map("workflow_id")
+  actor          String
+  action         String
+  reason         String?
+  fromStep       String?  @map("from_step")
+  toStep         String?  @map("to_step")
+  fromStatus     String?  @map("from_status")
+  toStatus       String?  @map("to_status")
+  idempotencyKey String?  @unique @map("idempotency_key")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([workflowId, createdAt(sort: Desc)], map: "dispatch_workflow_audit_workflow_idx")
+  @@map("dispatch_workflow_audit")
+}

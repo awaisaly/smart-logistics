@@ -1,8 +1,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Role-based access control (RBAC)
+// Role-based access control (RBAC) — data-driven
 //
-// Each role only sees and can reach the pages relevant to its job. `overview` and
-// the AI assistant are shared by everyone; everything else is scoped per role.
+// Page access is no longer hardcoded in the frontend. The backend (user-service
+// `roles.pages`, surfaced on the authenticated user as `user.pages`) is the
+// single source of truth for which pages a role can see/reach. These helpers
+// only sanitize that list and map between routes and page ids.
+//
 // Page ids match the sidebar NAV item ids in router.tsx.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -21,23 +24,13 @@ export const ALL_PAGES = [
 
 export type PageId = (typeof ALL_PAGES)[number];
 
-export const ROLE_PAGE_ACCESS: Record<string, PageId[]> = {
-  // Administrators run the whole operation.
-  admin: [...ALL_PAGES],
+const ALL_PAGE_SET = new Set<string>(ALL_PAGES);
 
-  // Warehouse operators care about inbound/outbound flows and the workflows moving them.
-  warehouse_operator: ["overview", "shipments", "dispatch", "warehouse", "events", "ai"],
-
-  // Customer support handles cases, returns, SLAs and the analytics behind them.
-  customer_support: ["overview", "shipments", "returns", "analytics", "ai"],
-
-  // Couriers focus on their routes, deliveries and the shipments they carry.
-  courier: ["overview", "couriers", "shipments", "ai"],
-};
-
-// Fallback for unknown/missing roles: the shared minimum.
+// Shared minimum used when a user has no pages yet (e.g. stale session) — every
+// role at least gets the overview and the assistant.
 const FALLBACK_PAGES: PageId[] = ["overview", "ai"];
 
+// Pure UI routing: maps a route prefix to its page id. Independent of access.
 const PATH_TO_PAGE: Record<string, PageId> = {
   "/overview": "overview",
   "/shipments": "shipments",
@@ -52,12 +45,27 @@ const PATH_TO_PAGE: Record<string, PageId> = {
   "/ai": "ai",
 };
 
-export function pagesForRole(role?: string | null): PageId[] {
-  return ROLE_PAGE_ACCESS[role ?? ""] ?? FALLBACK_PAGES;
+const PAGE_TO_PATH: Record<PageId, string> = {
+  overview: "/overview",
+  shipments: "/shipments",
+  dispatch: "/dispatch",
+  warehouse: "/warehouses",
+  couriers: "/couriers",
+  events: "/events",
+  analytics: "/analytics",
+  returns: "/returns",
+  observability: "/observability",
+  ai: "/ai",
+};
+
+/** Sanitize the backend-provided page list to known page ids (preserving order). */
+export function pagesForUser(pages?: string[] | null): PageId[] {
+  const valid = (pages ?? []).filter((p): p is PageId => ALL_PAGE_SET.has(p));
+  return valid.length > 0 ? valid : FALLBACK_PAGES;
 }
 
-export function canAccessPage(role: string | undefined | null, page: PageId): boolean {
-  return pagesForRole(role).includes(page);
+export function canAccessPage(pages: string[] | null | undefined, page: PageId): boolean {
+  return pagesForUser(pages).includes(page);
 }
 
 /** Resolve the top-level page id for a route pathname (e.g. "/shipments/SL-1" → "shipments"). */
@@ -66,9 +74,8 @@ export function pageIdForPath(pathname: string): PageId | null {
   return PATH_TO_PAGE[top] ?? null;
 }
 
-/** The landing route for a role: its first allowed page (overview for every role). */
-export function defaultRouteForRole(role?: string | null): string {
-  const first = pagesForRole(role)[0] ?? "overview";
-  const entry = Object.entries(PATH_TO_PAGE).find(([, page]) => page === first);
-  return entry?.[0] ?? "/overview";
+/** The landing route for a user: their first allowed page (overview for every role). */
+export function defaultRouteForUser(pages?: string[] | null): string {
+  const first = pagesForUser(pages)[0] ?? "overview";
+  return PAGE_TO_PATH[first] ?? "/overview";
 }

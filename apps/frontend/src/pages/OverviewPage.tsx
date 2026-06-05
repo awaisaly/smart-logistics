@@ -158,14 +158,19 @@ export function OverviewPage(): JSX.Element {
               {exceptions.slice(0, 5).map((row, i) => {
                 const severity = String(row.severity ?? "low");
                 const tone = severity === "high" ? "err" : severity === "medium" ? "warn" : "neutral";
+                const kind = String(row.kind ?? "Exception");
+                const shipment = String(row.shipment ?? "");
+                const age = String(row.age ?? "-");
                 return (
                   <div key={String(row.id ?? i)} style={{ display: "flex", gap: 10, alignItems: "center", paddingBottom: 8, borderBottom: "0.5px solid var(--line)" }}>
-                    <PrototypePill tone={tone}>{severity}</PrototypePill>
+                    <span style={{ flexShrink: 0 }}>
+                      <PrototypePill tone={tone}>{severity}</PrototypePill>
+                    </span>
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ color: "var(--ink)", fontSize: 12, fontWeight: 500 }}>{String(row.kind ?? "Exception")}</div>
-                      <div style={{ color: "var(--mute)", fontSize: 10.5, fontFamily: "var(--mono)" }}>{String(row.shipment ?? "")}</div>
+                      <div title={kind} style={{ color: "var(--ink)", fontSize: 12, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{kind}</div>
+                      <div title={shipment} style={{ color: "var(--mute)", fontSize: 10.5, fontFamily: "var(--mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{shipment}</div>
                     </div>
-                    <span style={{ color: "var(--mute)", fontSize: 10.5, fontFamily: "var(--mono)" }}>{String(row.age ?? "-")}</span>
+                    <span style={{ color: "var(--mute)", fontSize: 10.5, fontFamily: "var(--mono)", flexShrink: 0, whiteSpace: "nowrap" }}>{age}</span>
                   </div>
                 );
               })}

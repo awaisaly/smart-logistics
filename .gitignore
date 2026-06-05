@@ -27,5 +27,8 @@ logs/
 tmp/
 .cache/
 
+# generated prisma clients (run `pnpm db:generate`)
+**/src/generated/
+
 # legacy prototype
 prototype/

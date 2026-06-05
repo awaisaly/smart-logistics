@@ -23,7 +23,9 @@ export function useCurrentUser(): {
     userName,
     firstName,
     userInitials: user ? deriveUserInitials(user.email) : "GU",
-    userRoleLabel: user ? formatRole(user.role) : "Not signed in",
+    // Prefer the backend-provided role label (data-driven); fall back to a
+    // formatted version of the role key.
+    userRoleLabel: user ? authUser?.label ?? formatRole(user.role) : "Not signed in",
     loading,
   };
 }

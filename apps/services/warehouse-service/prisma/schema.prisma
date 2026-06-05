@@ -1,0 +1,50 @@
+// warehouse-service data model. Mapped to existing snake_case tables.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model WarehouseRecord {
+  id         String   @id
+  city       String
+  name       String
+  util       Float    @default(0)
+  lanes      Int      @default(0)
+  inbound    Int      @default(0)
+  outbound   Int      @default(0)
+  throughput String   @default("0%")
+  stockLow   Int      @default(0) @map("stock_low")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@map("warehouse_records")
+}
+
+model WarehouseLaneOccupancy {
+  id           String   @id
+  warehouseId  String   @map("warehouse_id")
+  laneIndex    Int      @map("lane_index")
+  occupancyPct Int      @map("occupancy_pct")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("warehouse_lane_occupancy")
+}
+
+model WarehouseStockItem {
+  id             String   @id
+  warehouseId    String   @map("warehouse_id")
+  sku            String
+  name           String
+  onHand         Int      @default(0) @map("on_hand")
+  reserved       Int      @default(0)
+  thresholdValue Int      @default(0) @map("threshold_value")
+  hot            Boolean  @default(false)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@map("warehouse_stock_items")
+}

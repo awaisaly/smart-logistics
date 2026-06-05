@@ -1,0 +1,29 @@
+// courier-service data model. Mapped to existing snake_case tables.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model CourierRecord {
+  id        String   @id
+  userId    String   @map("user_id")
+  name      String
+  city      String   @default("Karachi")
+  zone      String   @default("Unassigned")
+  status    String   @default("available")
+  load      Int      @default(0)
+  capacity  Int      @default(10)
+  rating    Float    @default(5)
+  since     String   @default("2026")
+  attempts  Int      @default(0)
+  delivered Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("courier_records")
+}

@@ -1,26 +1,21 @@
 /* eslint-disable no-console */
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
-import { Pool } from "pg";
 import { MongoClient } from "mongodb";
+import { databaseUrl, ROLE_DEFS } from "@smartlogistics/shared-middleware";
+
+// Per-service Prisma clients (each service owns its own database/schema).
+import { PrismaClient as UserPrisma } from "../apps/services/user-service/src/generated/prisma/index.js";
+import { PrismaClient as ShipmentPrisma } from "../apps/services/shipment-service/src/generated/prisma/index.js";
+import { PrismaClient as WarehousePrisma } from "../apps/services/warehouse-service/src/generated/prisma/index.js";
+import { PrismaClient as CourierPrisma } from "../apps/services/courier-service/src/generated/prisma/index.js";
+import { PrismaClient as DispatchPrisma } from "../apps/services/dispatch-service/src/generated/prisma/index.js";
+import { PrismaClient as NotificationPrisma } from "../apps/services/notification-service/src/generated/prisma/index.js";
+import { PrismaClient as AiPrisma } from "../apps/services/ai-service/src/generated/prisma/index.js";
+import { PrismaClient as AnalyticsPrisma } from "../apps/services/analytics-service/src/generated/analytics/index.js";
 
 // ────────────────────────────────────────────────────────────────────────────
 // Configuration
-
-const PG_USER = process.env.POSTGRES_USER ?? "smartlogistics";
-const PG_PASS = process.env.POSTGRES_PASSWORD ?? "smartlogistics";
-const PG_HOST = process.env.POSTGRES_HOST ?? "localhost";
-
-const SERVICE_PORTS = {
-  user: 5441,
-  shipment: 5433,
-  warehouse: 5434,
-  courier: 5435,
-  dispatch: 5436,
-  notification: 5437,
-  ai: 5438,
-  analytics: 5439,
-} as const;
 
 const MONGO_URL =
   process.env.MONGO_URL ??
@@ -28,11 +23,26 @@ const MONGO_URL =
 
 const TRACKING_DB = process.env.TRACKING_MONGO_DB ?? "tracking_service";
 
-function pgPoolFor(db: keyof typeof SERVICE_PORTS): Pool {
-  const port = SERVICE_PORTS[db];
-  return new Pool({
-    connectionString: `postgresql://${PG_USER}:${PG_PASS}@${PG_HOST}:${port}/${db}_service`,
-  });
+const userDb = new UserPrisma({ datasources: { db: { url: databaseUrl({ database: "user_service", defaultPort: 5441 }) } } });
+const shipmentDb = new ShipmentPrisma({ datasources: { db: { url: databaseUrl({ database: "shipment_service", defaultPort: 5433 }) } } });
+const warehouseDb = new WarehousePrisma({ datasources: { db: { url: databaseUrl({ database: "warehouse_service", defaultPort: 5434 }) } } });
+const courierDb = new CourierPrisma({ datasources: { db: { url: databaseUrl({ database: "courier_service", defaultPort: 5435 }) } } });
+const dispatchDb = new DispatchPrisma({ datasources: { db: { url: databaseUrl({ database: "dispatch_service", defaultPort: 5436 }) } } });
+const notificationDb = new NotificationPrisma({ datasources: { db: { url: databaseUrl({ database: "notification_service", defaultPort: 5437 }) } } });
+const aiDb = new AiPrisma({ datasources: { db: { url: databaseUrl({ database: "ai_service", defaultPort: 5438 }) } } });
+const analyticsDb = new AnalyticsPrisma({ datasources: { db: { url: databaseUrl({ database: "analytics_service", defaultPort: 5439 }) } } });
+
+async function disconnectAll(): Promise<void> {
+  await Promise.all([
+    userDb.$disconnect(),
+    shipmentDb.$disconnect(),
+    warehouseDb.$disconnect(),
+    courierDb.$disconnect(),
+    dispatchDb.$disconnect(),
+    notificationDb.$disconnect(),
+    aiDb.$disconnect(),
+    analyticsDb.$disconnect(),
+  ]);
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -255,220 +265,9 @@ function emailFromName(name: string, suffix: string | number): string {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Ensure schemas (mirrors what each service's ensureSchema creates)
-
-async function ensureSchemas(): Promise<void> {
-  console.log("→ Ensuring schemas across services");
-  const userPool = pgPoolFor("user");
-  const shipPool = pgPoolFor("shipment");
-  const whPool = pgPoolFor("warehouse");
-  const courPool = pgPoolFor("courier");
-  const disPool = pgPoolFor("dispatch");
-  const notPool = pgPoolFor("notification");
-  const aiPool = pgPoolFor("ai");
-  const anPool = pgPoolFor("analytics");
-
-  await userPool.query(`
-    CREATE TABLE IF NOT EXISTS users_v2 (
-      id TEXT PRIMARY KEY,
-      email TEXT UNIQUE NOT NULL,
-      password_hash TEXT NOT NULL,
-      role TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS auth_tokens (
-      id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL,
-      kind TEXT NOT NULL,
-      token TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
-
-  await shipPool.query(`
-    CREATE TABLE IF NOT EXISTS shipment_records (
-      id TEXT PRIMARY KEY,
-      "from" TEXT NOT NULL,
-      "to" TEXT NOT NULL,
-      weight TEXT NOT NULL,
-      status TEXT NOT NULL,
-      priority TEXT NOT NULL,
-      courier TEXT NOT NULL,
-      placed TEXT NOT NULL,
-      eta TEXT NOT NULL,
-      risk DOUBLE PRECISION NOT NULL DEFAULT 0,
-      items INTEGER NOT NULL DEFAULT 1,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS shipment_returns (
-      id TEXT PRIMARY KEY,
-      shipment TEXT NOT NULL,
-      reason TEXT NOT NULL,
-      initiated TEXT NOT NULL,
-      stage TEXT NOT NULL,
-      customer TEXT NOT NULL,
-      refund TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS shipment_exceptions (
-      id TEXT PRIMARY KEY,
-      shipment TEXT NOT NULL,
-      kind TEXT NOT NULL,
-      severity TEXT NOT NULL,
-      age TEXT NOT NULL,
-      owner_name TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS shipment_timelines (
-      id TEXT PRIMARY KEY,
-      shipment_id TEXT NOT NULL,
-      t TEXT NOT NULL,
-      label TEXT NOT NULL,
-      descr TEXT NOT NULL,
-      done BOOLEAN NOT NULL DEFAULT FALSE,
-      active BOOLEAN NOT NULL DEFAULT FALSE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS shipment_audits_v2 (
-      id TEXT PRIMARY KEY,
-      shipment_id TEXT NOT NULL,
-      t TEXT NOT NULL,
-      actor TEXT NOT NULL,
-      action TEXT NOT NULL,
-      reason TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
-
-  await whPool.query(`
-    CREATE TABLE IF NOT EXISTS warehouse_records (
-      id TEXT PRIMARY KEY,
-      city TEXT NOT NULL,
-      name TEXT NOT NULL,
-      util DOUBLE PRECISION NOT NULL DEFAULT 0,
-      lanes INTEGER NOT NULL DEFAULT 0,
-      inbound INTEGER NOT NULL DEFAULT 0,
-      outbound INTEGER NOT NULL DEFAULT 0,
-      throughput TEXT NOT NULL DEFAULT '0%',
-      stock_low INTEGER NOT NULL DEFAULT 0,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS warehouse_lane_occupancy (
-      id TEXT PRIMARY KEY,
-      warehouse_id TEXT NOT NULL,
-      lane_index INTEGER NOT NULL,
-      occupancy_pct INTEGER NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS warehouse_stock_items (
-      id TEXT PRIMARY KEY,
-      warehouse_id TEXT NOT NULL,
-      sku TEXT NOT NULL,
-      name TEXT NOT NULL,
-      on_hand INTEGER NOT NULL DEFAULT 0,
-      reserved INTEGER NOT NULL DEFAULT 0,
-      threshold_value INTEGER NOT NULL DEFAULT 0,
-      hot BOOLEAN NOT NULL DEFAULT FALSE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
-
-  await courPool.query(`
-    CREATE TABLE IF NOT EXISTS courier_records (
-      id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL,
-      name TEXT NOT NULL,
-      city TEXT NOT NULL DEFAULT 'Karachi',
-      zone TEXT NOT NULL DEFAULT 'Unassigned',
-      status TEXT NOT NULL DEFAULT 'available',
-      load INTEGER NOT NULL DEFAULT 0,
-      capacity INTEGER NOT NULL DEFAULT 10,
-      rating DOUBLE PRECISION NOT NULL DEFAULT 5,
-      since TEXT NOT NULL DEFAULT '2026',
-      attempts INTEGER NOT NULL DEFAULT 0,
-      delivered INTEGER NOT NULL DEFAULT 0,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
-
-  await disPool.query(`
-    CREATE TABLE IF NOT EXISTS dispatch_workflows (
-      id TEXT PRIMARY KEY,
-      type TEXT NOT NULL,
-      shipment TEXT NOT NULL,
-      started TEXT NOT NULL,
-      duration TEXT NOT NULL,
-      status TEXT NOT NULL,
-      step TEXT NOT NULL,
-      retries INTEGER NOT NULL DEFAULT 0,
-      error TEXT,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS dispatch_failure_modes (
-      id TEXT PRIMARY KEY,
-      kind TEXT NOT NULL,
-      count INTEGER NOT NULL DEFAULT 0,
-      trend TEXT NOT NULL DEFAULT 'flat',
-      samples JSONB NOT NULL DEFAULT '[]'::jsonb,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
-
-  await notPool.query(`
-    CREATE TABLE IF NOT EXISTS notification_log_v2 (
-      id TEXT PRIMARY KEY,
-      event_id TEXT NOT NULL,
-      channel TEXT NOT NULL,
-      recipient TEXT NOT NULL,
-      status TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
-
-  await aiPool.query(`
-    CREATE TABLE IF NOT EXISTS ai_sessions (
-      id UUID PRIMARY KEY,
-      user_id UUID,
-      started_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS ai_messages (
-      id UUID PRIMARY KEY,
-      session_id UUID NOT NULL,
-      role TEXT NOT NULL,
-      content TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS ai_artifacts (
-      kind TEXT PRIMARY KEY,
-      payload JSONB NOT NULL DEFAULT '[]'::jsonb,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
-
-  await anPool.query(`
-    CREATE TABLE IF NOT EXISTS analytics_snapshots (
-      kind TEXT PRIMARY KEY,
-      payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
-
-  await Promise.all([
-    userPool.end(),
-    shipPool.end(),
-    whPool.end(),
-    courPool.end(),
-    disPool.end(),
-    notPool.end(),
-    aiPool.end(),
-    anPool.end(),
-  ]);
-}
-
-// ────────────────────────────────────────────────────────────────────────────
 // Domain generators
 
-interface SeedUser { id: string; email: string; role: string; name: string }
+interface SeedUser { id: string; email: string; role: string; name: string; phone: string; employeeId: string; region: string }
 
 // Stable primary admin baked into the seed so the operations console always opens
 // against a known user. Inserted LAST so `created_at DESC` picks him first.
@@ -476,8 +275,15 @@ const PRIMARY_ADMIN: SeedUser = {
   id: "00000000-0000-0000-0000-00000000a1a1",
   email: "awais.ali@smartlogistics.example",
   role: "admin",
-  name: "Awais Ali"
+  name: "Awais Ali",
+  phone: "+923001234567",
+  employeeId: "EMP-0001",
+  region: "Global"
 };
+
+function randomPhone(): string {
+  return `${pickOne(["+92301", "+92321", "+92345", "+92333"])}${randInt(1_000_000, 9_999_999)}`;
+}
 
 function genUsers(adminCount = 2, supportCount = 3, warehouseCount = 6, courierCount = 18): SeedUser[] {
   const roles: Array<[string, number]> = [
@@ -492,7 +298,16 @@ function genUsers(adminCount = 2, supportCount = 3, warehouseCount = 6, courierC
     for (let i = 0; i < n; i += 1) {
       const name = fullName();
       counter += 1;
-      out.push({ id: randomUUID(), email: emailFromName(name, `${role}${counter}`), role, name });
+      const prefix = role === "courier" ? "CR" : role === "warehouse_operator" ? "WH" : role === "customer_support" ? "CS" : "AD";
+      out.push({
+        id: randomUUID(),
+        email: emailFromName(name, `${role}${counter}`),
+        role,
+        name,
+        phone: randomPhone(),
+        employeeId: `EMP-${prefix}-${String(1000 + counter)}`,
+        region: pickOne(CITIES).region
+      });
     }
   }
   // append last so PRIMARY_ADMIN's created_at is the most recent → first in /users
@@ -553,6 +368,15 @@ function genCouriers(users: SeedUser[]): SeedCourier[] {
 
 interface SeedShipment { id: string; from: string; to: string; weight: string; status: string; priority: string; courier: string; placed: string; eta: string; risk: number; items: number; createdAt: Date; transitMinutes: number }
 function genShipments(warehouses: SeedWarehouse[], couriers: SeedCourier[], count: number): SeedShipment[] {
+  // Tracking ids are drawn from a finite numeric space, so guard against
+  // collisions (the primary key is `id`) by retrying until unique.
+  const usedIds = new Set<string>();
+  const nextId = (): string => {
+    let id = `SL-${randInt(2_300_000, 2_499_999)}`;
+    while (usedIds.has(id)) id = `SL-${randInt(2_300_000, 2_499_999)}`;
+    usedIds.add(id);
+    return id;
+  };
   return Array.from({ length: count }).map((_, i) => {
     const fromW = pickOne(warehouses);
     const toW = pickOne(warehouses.filter((w) => w.id !== fromW.id));
@@ -560,7 +384,7 @@ function genShipments(warehouses: SeedWarehouse[], couriers: SeedCourier[], coun
     const createdAt = shipmentCreatedAt(i, count);
     const etaInMin = randInt(30, 60 * 30);
     return {
-      id: `SL-${randInt(2_300_000, 2_499_999)}`,
+      id: nextId(),
       from: fromW.id,
       to: toW.id,
       weight: `${randFloat(0.5, 24)}kg`,
@@ -983,18 +807,56 @@ function genAiMetrics(): Record<string, unknown> {
 // ────────────────────────────────────────────────────────────────────────────
 // Writers
 
-async function writeUsers(users: SeedUser[]): Promise<void> {
-  const pool = pgPoolFor("user");
-  await pool.query(`TRUNCATE users_v2, auth_tokens RESTART IDENTITY`);
+// Idempotently seeds the normalized roles table (matching user-service startup)
+// and returns a role key → id map used to set each user's role_id FK.
+async function seedRoles(): Promise<Map<string, number>> {
+  const byKey = new Map<string, number>();
+  for (const def of ROLE_DEFS) {
+    const row = await userDb.role.upsert({
+      where: { key: def.key },
+      create: { key: def.key, label: def.label, description: def.description, pages: def.pages, apiPrefixes: def.apiPrefixes },
+      update: { label: def.label, description: def.description, pages: def.pages, apiPrefixes: def.apiPrefixes }
+    });
+    byKey.set(def.key, row.id);
+  }
+  return byKey;
+}
+
+async function writeUsers(users: SeedUser[], roleIdByKey: Map<string, number>): Promise<void> {
+  // Clear in FK-safe order (admin_profiles & auth_tokens reference users); keep roles.
+  await userDb.authToken.deleteMany({});
+  await userDb.adminProfile.deleteMany({});
+  await userDb.user.deleteMany({});
   for (const u of users) {
     // PRIMARY_ADMIN (last in the array) keeps the newest created_at so it sorts first.
     const isPrimaryAdmin = u.id === PRIMARY_ADMIN.id;
-    await pool.query(
-      `INSERT INTO users_v2 (id, email, password_hash, role, created_at) VALUES ($1,$2,$3,$4,$5)`,
-      [u.id, u.email, "seed-password-hash", u.role, isPrimaryAdmin ? new Date() : randomCreatedAt()]
-    );
+    await userDb.user.create({
+      data: {
+        id: u.id,
+        email: u.email,
+        passwordHash: "seed-password-hash",
+        role: u.role,
+        roleId: roleIdByKey.get(u.role) ?? null,
+        fullName: u.name,
+        phone: u.phone,
+        employeeId: u.employeeId,
+        region: u.region,
+        status: "active",
+        createdAt: isPrimaryAdmin ? new Date() : randomCreatedAt()
+      }
+    });
+    if (u.role === "admin") {
+      await userDb.adminProfile.create({
+        data: {
+          userId: u.id,
+          accessLevel: isPrimaryAdmin ? "owner" : "standard",
+          managedRegions: isPrimaryAdmin ? ["Global"] : [u.region],
+          canManageUsers: true,
+          notes: isPrimaryAdmin ? "Primary console administrator" : null
+        }
+      });
+    }
   }
-  await pool.end();
 }
 
 async function writeShipments(
@@ -1004,132 +866,88 @@ async function writeShipments(
   timelines: SeedTimelineEntry[],
   audits: SeedAuditRow[]
 ): Promise<void> {
-  const pool = pgPoolFor("shipment");
-  // Ensure the transit_minutes column exists even if the shipment-service hasn't
-  // run its migration yet (seed can run before services boot).
-  await pool.query(`ALTER TABLE shipment_records ADD COLUMN IF NOT EXISTS transit_minutes INTEGER NOT NULL DEFAULT 0`);
-  await pool.query(`TRUNCATE shipment_records, shipment_returns, shipment_exceptions, shipment_timelines, shipment_audits_v2 RESTART IDENTITY`);
-  for (const s of shipments) {
-    await pool.query(
-      `INSERT INTO shipment_records (id, "from", "to", weight, status, priority, courier, placed, eta, risk, items, transit_minutes, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-      [s.id, s.from, s.to, s.weight, s.status, s.priority, s.courier, s.placed, s.eta, s.risk, s.items, s.transitMinutes, s.createdAt]
-    );
-  }
-  for (const r of returns) {
-    await pool.query(
-      `INSERT INTO shipment_returns (id, shipment, reason, initiated, stage, customer, refund, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [r.id, r.shipment, r.reason, r.initiated, r.stage, r.customer, r.refund, r.createdAt]
-    );
-  }
-  for (const e of exceptions) {
-    await pool.query(
-      `INSERT INTO shipment_exceptions (id, shipment, kind, severity, age, owner_name, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-      [e.id, e.shipment, e.kind, e.severity, e.age, e.owner, e.createdAt]
-    );
-  }
-  for (const t of timelines) {
-    await pool.query(
-      `INSERT INTO shipment_timelines (id, shipment_id, t, label, descr, done, active, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [t.id, t.shipmentId, t.t, t.label, t.descr, t.done, t.active, t.createdAt]
-    );
-  }
-  for (const a of audits) {
-    await pool.query(
-      `INSERT INTO shipment_audits_v2 (id, shipment_id, t, actor, action, reason, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-      [a.id, a.shipmentId, a.t, a.actor, a.action, a.reason, a.createdAt]
-    );
-  }
-  await pool.end();
+  await shipmentDb.shipmentAudit.deleteMany({});
+  await shipmentDb.shipmentTimeline.deleteMany({});
+  await shipmentDb.shipmentException.deleteMany({});
+  await shipmentDb.shipmentReturn.deleteMany({});
+  await shipmentDb.shipmentRecord.deleteMany({});
+  await shipmentDb.shipmentRecord.createMany({
+    data: shipments.map((s) => ({
+      id: s.id,
+      from: s.from,
+      to: s.to,
+      weight: s.weight,
+      status: s.status,
+      priority: s.priority,
+      courier: s.courier,
+      placed: s.placed,
+      eta: s.eta,
+      risk: s.risk,
+      items: s.items,
+      transitMinutes: s.transitMinutes,
+      createdAt: s.createdAt
+    }))
+  });
+  await shipmentDb.shipmentReturn.createMany({
+    data: returns.map((r) => ({ id: r.id, shipment: r.shipment, reason: r.reason, initiated: r.initiated, stage: r.stage, customer: r.customer, refund: r.refund, createdAt: r.createdAt }))
+  });
+  await shipmentDb.shipmentException.createMany({
+    data: exceptions.map((e) => ({ id: e.id, shipment: e.shipment, kind: e.kind, severity: e.severity, age: e.age, ownerName: e.owner, createdAt: e.createdAt }))
+  });
+  await shipmentDb.shipmentTimeline.createMany({
+    data: timelines.map((t) => ({ id: t.id, shipmentId: t.shipmentId, t: t.t, label: t.label, descr: t.descr, done: t.done, active: t.active, createdAt: t.createdAt }))
+  });
+  await shipmentDb.shipmentAudit.createMany({
+    data: audits.map((a) => ({ id: a.id, shipmentId: a.shipmentId, t: a.t, actor: a.actor, action: a.action, reason: a.reason, createdAt: a.createdAt }))
+  });
 }
 
 async function writeWarehouses(warehouses: SeedWarehouse[], lanes: SeedLanes[], items: SeedStockItem[]): Promise<void> {
-  const pool = pgPoolFor("warehouse");
-  await pool.query(`TRUNCATE warehouse_records, warehouse_lane_occupancy, warehouse_stock_items RESTART IDENTITY`);
-  for (const w of warehouses) {
-    await pool.query(
-      `INSERT INTO warehouse_records (id, city, name, util, lanes, inbound, outbound, throughput, stock_low, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-      [w.id, w.city, w.name, w.util, w.lanes, w.inbound, w.outbound, w.throughput, w.stockLow, w.createdAt]
-    );
-  }
-  for (const l of lanes) {
-    await pool.query(
-      `INSERT INTO warehouse_lane_occupancy (id, warehouse_id, lane_index, occupancy_pct)
-       VALUES ($1,$2,$3,$4)`,
-      [l.id, l.warehouseId, l.laneIndex, l.occupancyPct]
-    );
-  }
-  for (const it of items) {
-    await pool.query(
-      `INSERT INTO warehouse_stock_items (id, warehouse_id, sku, name, on_hand, reserved, threshold_value, hot)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [it.id, it.warehouseId, it.sku, it.name, it.on, it.reserved, it.threshold, it.hot]
-    );
-  }
-  await pool.end();
+  await warehouseDb.warehouseStockItem.deleteMany({});
+  await warehouseDb.warehouseLaneOccupancy.deleteMany({});
+  await warehouseDb.warehouseRecord.deleteMany({});
+  await warehouseDb.warehouseRecord.createMany({
+    data: warehouses.map((w) => ({ id: w.id, city: w.city, name: w.name, util: w.util, lanes: w.lanes, inbound: w.inbound, outbound: w.outbound, throughput: w.throughput, stockLow: w.stockLow, createdAt: w.createdAt }))
+  });
+  await warehouseDb.warehouseLaneOccupancy.createMany({
+    data: lanes.map((l) => ({ id: l.id, warehouseId: l.warehouseId, laneIndex: l.laneIndex, occupancyPct: l.occupancyPct }))
+  });
+  await warehouseDb.warehouseStockItem.createMany({
+    data: items.map((it) => ({ id: it.id, warehouseId: it.warehouseId, sku: it.sku, name: it.name, onHand: it.on, reserved: it.reserved, thresholdValue: it.threshold, hot: it.hot }))
+  });
 }
 
 async function writeCouriers(couriers: SeedCourier[]): Promise<void> {
-  const pool = pgPoolFor("courier");
-  await pool.query(`TRUNCATE courier_records RESTART IDENTITY`);
-  for (const c of couriers) {
-    await pool.query(
-      `INSERT INTO courier_records (id, user_id, name, city, zone, status, load, capacity, rating, since, attempts, delivered, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-      [c.id, c.userId, c.name, c.city, c.zone, c.status, c.load, c.capacity, c.rating, c.since, c.attempts, c.delivered, c.createdAt]
-    );
-  }
-  await pool.end();
+  await courierDb.courierRecord.deleteMany({});
+  await courierDb.courierRecord.createMany({
+    data: couriers.map((c) => ({ id: c.id, userId: c.userId, name: c.name, city: c.city, zone: c.zone, status: c.status, load: c.load, capacity: c.capacity, rating: c.rating, since: c.since, attempts: c.attempts, delivered: c.delivered, createdAt: c.createdAt }))
+  });
 }
 
 async function writeDispatch(workflows: SeedWorkflow[], failures: SeedFailureMode[]): Promise<void> {
-  const pool = pgPoolFor("dispatch");
-  await pool.query(`TRUNCATE dispatch_workflows, dispatch_failure_modes RESTART IDENTITY`);
-  for (const w of workflows) {
-    await pool.query(
-      `INSERT INTO dispatch_workflows (id, type, shipment, started, duration, status, step, retries, error, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-      [w.id, w.type, w.shipment, w.started, w.duration, w.status, w.step, w.retries, w.error, w.createdAt]
-    );
-  }
-  for (const f of failures) {
-    await pool.query(
-      `INSERT INTO dispatch_failure_modes (id, kind, count, trend, samples)
-       VALUES ($1,$2,$3,$4,$5)`,
-      [f.id, f.kind, f.count, f.trend, JSON.stringify(f.samples)]
-    );
-  }
-  await pool.end();
+  await dispatchDb.dispatchWorkflowAudit.deleteMany({});
+  await dispatchDb.dispatchWorkflow.deleteMany({});
+  await dispatchDb.dispatchFailureMode.deleteMany({});
+  await dispatchDb.dispatchWorkflow.createMany({
+    data: workflows.map((w) => ({ id: w.id, type: w.type, shipment: w.shipment, started: w.started, duration: w.duration, status: w.status, step: w.step, retries: w.retries, error: w.error, createdAt: w.createdAt }))
+  });
+  await dispatchDb.dispatchFailureMode.createMany({
+    data: failures.map((f) => ({ id: f.id, kind: f.kind, count: f.count, trend: f.trend, samples: f.samples }))
+  });
 }
 
 async function writeNotifications(rows: SeedNotification[]): Promise<void> {
-  const pool = pgPoolFor("notification");
-  await pool.query(`TRUNCATE notification_log_v2 RESTART IDENTITY`);
-  for (const n of rows) {
-    await pool.query(
-      `INSERT INTO notification_log_v2 (id, event_id, channel, recipient, status, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6)`,
-      [n.id, n.eventId, n.channel, n.recipient, n.status, n.createdAt]
-    );
-  }
-  await pool.end();
+  await notificationDb.notificationLog.deleteMany({});
+  await notificationDb.notificationLog.createMany({
+    data: rows.map((n) => ({ id: n.id, eventId: n.eventId, channel: n.channel, recipient: n.recipient, status: n.status, createdAt: n.createdAt }))
+  });
 }
 
 async function writeAnalytics(snapshots: Record<string, unknown>): Promise<void> {
-  const pool = pgPoolFor("analytics");
-  await pool.query(`TRUNCATE analytics_snapshots RESTART IDENTITY`);
-  for (const [kind, payload] of Object.entries(snapshots)) {
-    await pool.query(
-      `INSERT INTO analytics_snapshots (kind, payload) VALUES ($1,$2)`,
-      [kind, JSON.stringify(payload)]
-    );
-  }
-  await pool.end();
+  await analyticsDb.analyticsSnapshot.deleteMany({});
+  await analyticsDb.analyticsSnapshot.createMany({
+    data: Object.entries(snapshots).map(([kind, payload]) => ({ kind, payload: payload as object }))
+  });
 }
 
 async function writeAi(
@@ -1139,36 +957,31 @@ async function writeAi(
   metrics: Record<string, unknown>,
   sessionUser?: SeedUser
 ): Promise<void> {
-  const pool = pgPoolFor("ai");
-  await pool.query(`TRUNCATE ai_sessions, ai_messages, ai_artifacts RESTART IDENTITY`);
-  for (const [kind, payload] of [
+  await aiDb.aiMessage.deleteMany({});
+  await aiDb.aiSession.deleteMany({});
+  await aiDb.aiArtifact.deleteMany({});
+  const artifacts: Array<[string, unknown]> = [
     ["suggestions", suggestions],
     ["assistant_tools", tools],
     ["assistant_prompts", prompts],
     ["assistant_metrics", metrics],
     ["daily_dispatch_report", "Dispatch stable. 3 zones with elevated exception rate.  Recommend a courier rebalance for North."],
-  ] as const) {
-    await pool.query(
-      `INSERT INTO ai_artifacts (kind, payload) VALUES ($1,$2)`,
-      [kind, JSON.stringify(payload)]
-    );
-  }
+  ];
+  await aiDb.aiArtifact.createMany({
+    data: artifacts.map(([kind, payload]) => ({ kind, payload: payload as object }))
+  });
   if (sessionUser) {
     const sessionId = "00000000-0000-0000-0000-000000000001";
-    await pool.query(`INSERT INTO ai_sessions (id, user_id) VALUES ($1, NULL) ON CONFLICT (id) DO NOTHING`, [sessionId]);
+    await aiDb.aiSession.upsert({ where: { id: sessionId }, create: { id: sessionId }, update: {} });
     const seed = [
       { role: "assistant", text: "Welcome — ask anything about today's operations." },
       { role: "user", text: "Summarize today's exceptions" },
       { role: "assistant", text: "Top exception kinds: address_unreachable, stockout, courier_no_show. Karachi has the most activity." },
     ];
-    for (const m of seed) {
-      await pool.query(
-        `INSERT INTO ai_messages (id, session_id, role, content) VALUES ($1,$2,$3,$4)`,
-        [randomUUID(), sessionId, m.role, m.text]
-      );
-    }
+    await aiDb.aiMessage.createMany({
+      data: seed.map((m) => ({ id: randomUUID(), sessionId, role: m.role, content: m.text }))
+    });
   }
-  await pool.end();
 }
 
 async function writeTracking(events: ReturnType<typeof genTrackingEvents>, topics: Array<Record<string, unknown>>, consumers: Array<Record<string, unknown>>, queues: Array<Record<string, unknown>>, dlq: Array<Record<string, unknown>>, replays: Array<Record<string, unknown>>): Promise<void> {
@@ -1200,7 +1013,8 @@ async function writeTracking(events: ReturnType<typeof genTrackingEvents>, topic
 
 async function main(): Promise<void> {
   console.log("SmartLogistics seed starting…");
-  await ensureSchemas();
+  const roleIdByKey = await seedRoles();
+  console.log(`✓ roles: ${roleIdByKey.size}`);
 
   const users = genUsers();
   const warehouses = genWarehouses();
@@ -1227,7 +1041,7 @@ async function main(): Promise<void> {
   const aiPrompts = genAiPrompts();
   const aiMetrics = genAiMetrics();
 
-  await writeUsers(users);
+  await writeUsers(users, roleIdByKey);
   console.log(`✓ users: ${users.length}`);
   await writeWarehouses(warehouses, lanes, stockItems);
   console.log(`✓ warehouses: ${warehouses.length} (lanes ${lanes.length}, stock ${stockItems.length})`);
@@ -1255,7 +1069,11 @@ async function main(): Promise<void> {
   console.log("Seed complete.");
 }
 
-main().catch((err) => {
-  console.error("Seed failed:", err);
-  process.exit(1);
-});
+main()
+  .catch((err) => {
+    console.error("Seed failed:", err);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    await disconnectAll().catch(() => undefined);
+  });

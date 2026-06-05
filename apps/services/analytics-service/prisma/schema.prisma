@@ -1,0 +1,19 @@
+// analytics-service own data model (analytics_service DB).
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/analytics"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model AnalyticsSnapshot {
+  kind      String   @id
+  payload   Json     @default("{}")
+  updatedAt DateTime @default(now()) @map("updated_at")
+
+  @@map("analytics_snapshots")
+}

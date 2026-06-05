@@ -3,15 +3,10 @@ import { buildLogger, setupMetrics, parseRange } from "@smartlogistics/shared-mi
 import { startDispatchWorkflow } from "./temporal/client.js";
 import { startDispatchWorker } from "./temporal/worker.js";
 import * as dispatchActivities from "./temporal/activities/dispatch.activities.js";
-import { Pool } from "pg";
+import { prisma } from "./db.js";
 
 const app = Fastify({ logger: buildLogger("dispatch-service") });
 setupMetrics(app, "dispatch-service");
-const pool = new Pool({
-  connectionString:
-    process.env.DATABASE_URL ??
-    `postgresql://${process.env.POSTGRES_USER ?? "smartlogistics"}:${process.env.POSTGRES_PASSWORD ?? "smartlogistics"}@${process.env.POSTGRES_HOST ?? "localhost"}:${process.env.POSTGRES_PORT ?? "5436"}/dispatch_service`
-});
 
 const DISPATCH_STEPS = [
   "assign_courier",
@@ -27,45 +22,17 @@ type DispatchStep = (typeof DISPATCH_STEPS)[number];
 
 const TERMINAL_STATUSES = new Set(["completed", "terminated"]);
 
-const ensureSchema = async () => {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS dispatch_workflows (
-      id TEXT PRIMARY KEY,
-      type TEXT NOT NULL,
-      shipment TEXT NOT NULL,
-      started TEXT NOT NULL,
-      duration TEXT NOT NULL,
-      status TEXT NOT NULL,
-      step TEXT NOT NULL,
-      retries INTEGER NOT NULL DEFAULT 0,
-      error TEXT,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS dispatch_failure_modes (
-      id TEXT PRIMARY KEY,
-      kind TEXT NOT NULL,
-      count INTEGER NOT NULL DEFAULT 0,
-      trend TEXT NOT NULL DEFAULT 'flat',
-      samples JSONB NOT NULL DEFAULT '[]'::jsonb,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS dispatch_workflow_audit (
-      id SERIAL PRIMARY KEY,
-      workflow_id TEXT NOT NULL,
-      actor TEXT NOT NULL,
-      action TEXT NOT NULL,
-      reason TEXT,
-      from_step TEXT,
-      to_step TEXT,
-      from_status TEXT,
-      to_status TEXT,
-      idempotency_key TEXT UNIQUE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE INDEX IF NOT EXISTS dispatch_workflow_audit_workflow_idx
-      ON dispatch_workflow_audit (workflow_id, created_at DESC);
-  `);
-};
+const WORKFLOW_SELECT = {
+  id: true,
+  type: true,
+  shipment: true,
+  started: true,
+  duration: true,
+  status: true,
+  step: true,
+  retries: true,
+  error: true
+} as const;
 
 type WorkflowRow = {
   id: string;
@@ -80,14 +47,7 @@ type WorkflowRow = {
 };
 
 const getWorkflow = async (id: string): Promise<WorkflowRow | null> => {
-  const { rows } = await pool.query<WorkflowRow>(
-    `SELECT id, type, shipment, started, duration, status, step, retries, error
-     FROM dispatch_workflows
-     WHERE id = $1
-     LIMIT 1`,
-    [id]
-  );
-  return rows[0] ?? null;
+  return prisma.dispatchWorkflow.findUnique({ where: { id }, select: WORKFLOW_SELECT });
 };
 
 const recordAudit = async (entry: {
@@ -101,25 +61,26 @@ const recordAudit = async (entry: {
   toStatus?: string | null;
   idempotencyKey?: string | null;
 }): Promise<boolean> => {
-  const result = await pool.query(
-    `INSERT INTO dispatch_workflow_audit
-       (workflow_id, actor, action, reason, from_step, to_step, from_status, to_status, idempotency_key)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-     ON CONFLICT (idempotency_key) DO NOTHING
-     RETURNING id`,
-    [
-      entry.workflowId,
-      entry.actor,
-      entry.action,
-      entry.reason ?? null,
-      entry.fromStep ?? null,
-      entry.toStep ?? null,
-      entry.fromStatus ?? null,
-      entry.toStatus ?? null,
-      entry.idempotencyKey ?? null
-    ]
-  );
-  return (result.rowCount ?? 0) > 0;
+  try {
+    await prisma.dispatchWorkflowAudit.create({
+      data: {
+        workflowId: entry.workflowId,
+        actor: entry.actor,
+        action: entry.action,
+        reason: entry.reason ?? null,
+        fromStep: entry.fromStep ?? null,
+        toStep: entry.toStep ?? null,
+        fromStatus: entry.fromStatus ?? null,
+        toStatus: entry.toStatus ?? null,
+        idempotencyKey: entry.idempotencyKey ?? null
+      }
+    });
+    return true;
+  } catch (err) {
+    // Unique violation on idempotency_key → this action was already recorded.
+    if ((err as { code?: string }).code === "P2002") return false;
+    throw err;
+  }
 };
 
 const readActionBody = (
@@ -139,38 +100,33 @@ const readActionBody = (
 app.get("/health", async () => ({ ok: true, service: "dispatch-service" }));
 app.get("/workflows", async (request) => {
   const { from, to } = parseRange(request.query as { from?: string; to?: string });
-  const { rows } = await pool.query(
-    `SELECT id, type, shipment, started, duration, status, step, retries, error
-     FROM dispatch_workflows
-     WHERE created_at >= $1 AND created_at <= $2
-     ORDER BY created_at DESC
-     LIMIT 200`,
-    [from, to]
-  );
-  return { items: rows };
+  const items = await prisma.dispatchWorkflow.findMany({
+    where: { createdAt: { gte: new Date(from), lte: new Date(to) } },
+    select: WORKFLOW_SELECT,
+    orderBy: { createdAt: "desc" },
+    take: 200
+  });
+  return { items };
 });
 app.get("/failure-modes", async () => {
-  const { rows } = await pool.query(
-    `SELECT kind, count, trend, samples
-     FROM dispatch_failure_modes
-     ORDER BY count DESC
-     LIMIT 50`
-  );
-  return { items: rows.map((r: { samples: unknown[] }) => ({ ...r, samples: Array.isArray(r.samples) ? r.samples : [] })) };
+  const rows = await prisma.dispatchFailureMode.findMany({
+    select: { kind: true, count: true, trend: true, samples: true },
+    orderBy: { count: "desc" },
+    take: 50
+  });
+  return { items: rows.map((r) => ({ ...r, samples: Array.isArray(r.samples) ? r.samples : [] })) };
 });
 app.get("/kpis", async (request) => {
   const { from, to } = parseRange(request.query as { from?: string; to?: string });
-  const { rows } = await pool.query(
-    `SELECT status, duration
-     FROM dispatch_workflows
-     WHERE created_at >= $1 AND created_at <= $2`,
-    [from, to]
-  );
-  const running = rows.filter((w: { status: string }) => w.status === "running").length;
-  const failing = rows.filter((w: { status: string }) => w.status === "failing" || w.status === "compensating").length;
-  const completed = rows.filter((w: { status: string }) => w.status === "completed").length;
+  const rows = await prisma.dispatchWorkflow.findMany({
+    where: { createdAt: { gte: new Date(from), lte: new Date(to) } },
+    select: { status: true, duration: true }
+  });
+  const running = rows.filter((w) => w.status === "running").length;
+  const failing = rows.filter((w) => w.status === "failing" || w.status === "compensating").length;
+  const completed = rows.filter((w) => w.status === "completed").length;
   const durationSeconds = rows
-    .map((w: { duration?: string }) => Number.parseInt(String(w.duration ?? "").replace(/[^\d]/g, ""), 10))
+    .map((w) => Number.parseInt(String(w.duration ?? "").replace(/[^\d]/g, ""), 10))
     .filter((n: number) => Number.isFinite(n));
   const avgDurationSeconds =
     durationSeconds.length > 0 ? Math.round(durationSeconds.reduce((a: number, b: number) => a + b, 0) / durationSeconds.length) : 0;
@@ -193,13 +149,22 @@ app.post("/:shipmentId/trigger", async (request) => {
   const workflowId = `dispatch-${shipmentId}`;
 
   // Record the durable workflow row up front so it's visible immediately.
-  await pool.query(
-    `INSERT INTO dispatch_workflows (id, type, shipment, started, duration, status, step, retries, error)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-     ON CONFLICT (id) DO UPDATE
-       SET status = 'running', step = 'assign_courier', error = NULL, started = EXCLUDED.started`,
-    [workflowId, "DispatchWorkflow", shipmentId, new Date().toISOString(), "-", "running", "assign_courier", 0, null]
-  );
+  const startedAt = new Date().toISOString();
+  await prisma.dispatchWorkflow.upsert({
+    where: { id: workflowId },
+    create: {
+      id: workflowId,
+      type: "DispatchWorkflow",
+      shipment: shipmentId,
+      started: startedAt,
+      duration: "-",
+      status: "running",
+      step: "assign_courier",
+      retries: 0,
+      error: null
+    },
+    update: { status: "running", step: "assign_courier", error: null, started: startedAt }
+  });
 
   // Preferred path: hand the orchestration to Temporal (durable, retryable,
   // observable). If Temporal can't be reached, degrade to inline execution.
@@ -217,17 +182,12 @@ app.post("/:shipmentId/trigger", async (request) => {
 
 app.get("/:shipmentId/status", async (request) => {
   const { shipmentId } = request.params as { shipmentId: string };
-  const status = (
-    await pool.query(
-      `SELECT status
-       FROM dispatch_workflows
-       WHERE shipment = $1
-       ORDER BY created_at DESC
-       LIMIT 1`,
-      [shipmentId]
-    )
-  ).rows[0]?.status;
-  return { shipmentId, status: String(status ?? "UNKNOWN").toUpperCase() };
+  const row = await prisma.dispatchWorkflow.findFirst({
+    where: { shipment: shipmentId },
+    orderBy: { createdAt: "desc" },
+    select: { status: true }
+  });
+  return { shipmentId, status: String(row?.status ?? "UNKNOWN").toUpperCase() };
 });
 
 app.get("/:workflowId/audit", async (request, reply) => {
@@ -237,25 +197,32 @@ app.get("/:workflowId/audit", async (request, reply) => {
     reply.code(404);
     return { ok: false, error: "workflow not found" };
   }
-  const { rows } = await pool.query(
-    `SELECT actor, action, reason, from_step, to_step, from_status, to_status, created_at
-     FROM dispatch_workflow_audit
-     WHERE workflow_id = $1
-     ORDER BY created_at DESC
-     LIMIT 100`,
-    [workflowId]
-  );
+  const rows = await prisma.dispatchWorkflowAudit.findMany({
+    where: { workflowId },
+    select: {
+      actor: true,
+      action: true,
+      reason: true,
+      fromStep: true,
+      toStep: true,
+      fromStatus: true,
+      toStatus: true,
+      createdAt: true
+    },
+    orderBy: { createdAt: "desc" },
+    take: 100
+  });
   return {
     ok: true,
-    items: rows.map((r: Record<string, unknown>) => ({
-      t: r.created_at,
+    items: rows.map((r) => ({
+      t: r.createdAt,
       actor: r.actor,
       action: r.action,
       reason: r.reason,
-      fromStep: r.from_step,
-      toStep: r.to_step,
-      fromStatus: r.from_status,
-      toStatus: r.to_status
+      fromStep: r.fromStep,
+      toStep: r.toStep,
+      fromStatus: r.fromStatus,
+      toStatus: r.toStatus
     }))
   };
 });
@@ -274,16 +241,10 @@ app.post("/:workflowId/replay", async (request, reply) => {
     return { ok: false, error: "workflow is terminated and cannot be replayed" };
   }
 
-  await pool.query(
-    `UPDATE dispatch_workflows
-     SET status = 'running',
-         retries = 0,
-         error = NULL,
-         duration = '0s',
-         started = $2
-     WHERE id = $1`,
-    [workflowId, new Date().toISOString()]
-  );
+  await prisma.dispatchWorkflow.update({
+    where: { id: workflowId },
+    data: { status: "running", retries: 0, error: null, duration: "0s", started: new Date().toISOString() }
+  });
 
   const inserted = await recordAudit({
     workflowId,
@@ -321,15 +282,10 @@ app.post("/:workflowId/skip", async (request, reply) => {
   const nextStep = isLast ? workflow.step : DISPATCH_STEPS[safeIdx + 1];
   const nextStatus = isLast ? "completed" : "running";
 
-  await pool.query(
-    `UPDATE dispatch_workflows
-     SET step = $2,
-         status = $3,
-         retries = 0,
-         error = NULL
-     WHERE id = $1`,
-    [workflowId, nextStep, nextStatus]
-  );
+  await prisma.dispatchWorkflow.update({
+    where: { id: workflowId },
+    data: { step: nextStep, status: nextStatus, retries: 0, error: null }
+  });
 
   const inserted = await recordAudit({
     workflowId,
@@ -361,13 +317,10 @@ app.post("/:workflowId/terminate", async (request, reply) => {
     return { ok: false, error: `workflow is already ${workflow.status}` };
   }
 
-  await pool.query(
-    `UPDATE dispatch_workflows
-     SET status = 'terminated',
-         error = COALESCE(error, 'terminated by operator')
-     WHERE id = $1`,
-    [workflowId]
-  );
+  await prisma.dispatchWorkflow.update({
+    where: { id: workflowId },
+    data: { status: "terminated", error: workflow.error ?? "terminated by operator" }
+  });
 
   const inserted = await recordAudit({
     workflowId,
@@ -388,7 +341,6 @@ app.post("/:workflowId/terminate", async (request, reply) => {
 app.post("/delivery/:shipmentId/trigger", async () => ({ ok: true }));
 
 const port = Number(process.env.DISPATCH_SERVICE_PORT ?? 4005);
-await ensureSchema();
 
 // Best-effort: run the Temporal worker alongside the API. If Temporal isn't
 // reachable the API still serves and dispatch falls back to inline execution.

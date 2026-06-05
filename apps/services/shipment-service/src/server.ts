@@ -2,73 +2,55 @@ import Fastify from "fastify";
 import { z } from "zod";
 import { buildLogger, setupMetrics, parseRange } from "@smartlogistics/shared-middleware";
 import { shipmentStatusSchema } from "@smartlogistics/shared-types";
-import { Pool } from "pg";
+import { prisma } from "./db.js";
 
 const app = Fastify({ logger: buildLogger("shipment-service") });
 setupMetrics(app, "shipment-service");
-const pool = new Pool({
-  connectionString:
-    process.env.DATABASE_URL ??
-    `postgresql://${process.env.POSTGRES_USER ?? "smartlogistics"}:${process.env.POSTGRES_PASSWORD ?? "smartlogistics"}@${process.env.POSTGRES_HOST ?? "localhost"}:${process.env.POSTGRES_PORT ?? "5433"}/shipment_service`
-});
 
-const ensureSchema = async () => {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS shipment_records (
-      id TEXT PRIMARY KEY,
-      "from" TEXT NOT NULL,
-      "to" TEXT NOT NULL,
-      weight TEXT NOT NULL,
-      status TEXT NOT NULL,
-      priority TEXT NOT NULL,
-      courier TEXT NOT NULL,
-      placed TEXT NOT NULL,
-      eta TEXT NOT NULL,
-      risk DOUBLE PRECISION NOT NULL DEFAULT 0,
-      items INTEGER NOT NULL DEFAULT 1,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS shipment_returns (
-      id TEXT PRIMARY KEY,
-      shipment TEXT NOT NULL,
-      reason TEXT NOT NULL,
-      initiated TEXT NOT NULL,
-      stage TEXT NOT NULL,
-      customer TEXT NOT NULL,
-      refund TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS shipment_exceptions (
-      id TEXT PRIMARY KEY,
-      shipment TEXT NOT NULL,
-      kind TEXT NOT NULL,
-      severity TEXT NOT NULL,
-      age TEXT NOT NULL,
-      owner_name TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS shipment_timelines (
-      id TEXT PRIMARY KEY,
-      shipment_id TEXT NOT NULL,
-      t TEXT NOT NULL,
-      label TEXT NOT NULL,
-      descr TEXT NOT NULL,
-      done BOOLEAN NOT NULL DEFAULT FALSE,
-      active BOOLEAN NOT NULL DEFAULT FALSE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS shipment_audits_v2 (
-      id TEXT PRIMARY KEY,
-      shipment_id TEXT NOT NULL,
-      t TEXT NOT NULL,
-      actor TEXT NOT NULL,
-      action TEXT NOT NULL,
-      reason TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    ALTER TABLE shipment_records ADD COLUMN IF NOT EXISTS transit_minutes INTEGER NOT NULL DEFAULT 0;
-  `);
+// Shapes the internal (camelCase) Prisma row into the snake_cased JSON the
+// frontend has always consumed (notably `transit_minutes`).
+type ShipmentRow = {
+  id: string;
+  from: string;
+  to: string;
+  weight: string;
+  status: string;
+  priority: string;
+  courier: string;
+  placed: string;
+  eta: string;
+  risk: number;
+  items: number;
+  transitMinutes: number;
 };
+const SHIPMENT_SELECT = {
+  id: true,
+  from: true,
+  to: true,
+  weight: true,
+  status: true,
+  priority: true,
+  courier: true,
+  placed: true,
+  eta: true,
+  risk: true,
+  items: true,
+  transitMinutes: true
+} as const;
+const shipmentDto = (r: ShipmentRow) => ({
+  id: r.id,
+  from: r.from,
+  to: r.to,
+  weight: r.weight,
+  status: r.status,
+  priority: r.priority,
+  courier: r.courier,
+  placed: r.placed,
+  eta: r.eta,
+  risk: r.risk,
+  items: r.items,
+  transit_minutes: r.transitMinutes
+});
 
 const createShipmentSchema = z.object({
   reference: z.string().min(2),
@@ -94,16 +76,17 @@ app.post("/", async (request) => {
     items: 1,
     transitMinutes: 0
   };
-  await pool.query(
-    `INSERT INTO shipment_records (id, "from", "to", weight, status, priority, courier, placed, eta, risk, items, transit_minutes)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-    [id, created.from, created.to, created.weight, created.status, created.priority, created.courier, created.placed, created.eta, created.risk, created.items, created.transitMinutes]
-  );
-  await pool.query(
-    `INSERT INTO shipment_audits_v2 (id, shipment_id, t, actor, action, reason)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
-    [crypto.randomUUID(), id, new Date().toISOString(), "api:shipment-service", "shipment_created", "POST /shipments"]
-  );
+  await prisma.shipmentRecord.create({ data: created });
+  await prisma.shipmentAudit.create({
+    data: {
+      id: crypto.randomUUID(),
+      shipmentId: id,
+      t: new Date().toISOString(),
+      actor: "api:shipment-service",
+      action: "shipment_created",
+      reason: "POST /shipments"
+    }
+  });
   return created;
 });
 
@@ -112,76 +95,65 @@ app.get("/", async (request) => {
   const limit = Math.min(Math.max(Number(query.limit ?? 500), 1), 1000);
   const offset = Math.max(Number(query.offset ?? 0), 0);
   const { from, to } = parseRange(query);
-  const total = Number(
-    (await pool.query(`SELECT COUNT(*)::int AS c FROM shipment_records WHERE created_at >= $1 AND created_at <= $2`, [from, to])).rows[0]?.c ?? 0
-  );
-  const { rows } = await pool.query(
-    `SELECT id, "from", "to", weight, status, priority, courier, placed, eta, risk, items, transit_minutes
-     FROM shipment_records
-     WHERE created_at >= $1 AND created_at <= $2
-     ORDER BY created_at DESC
-     LIMIT $3 OFFSET $4`,
-    [from, to, limit, offset]
-  );
-  return { items: rows, total, page: Math.floor(offset / limit) + 1, limit };
+  const where = { createdAt: { gte: new Date(from), lte: new Date(to) } };
+  const total = await prisma.shipmentRecord.count({ where });
+  const rows = await prisma.shipmentRecord.findMany({
+    where,
+    select: SHIPMENT_SELECT,
+    orderBy: { createdAt: "desc" },
+    take: limit,
+    skip: offset
+  });
+  return { items: rows.map(shipmentDto), total, page: Math.floor(offset / limit) + 1, limit };
 });
 app.get("/returns", async (request) => {
   const { from, to } = parseRange(request.query as { from?: string; to?: string });
-  const { rows } = await pool.query(
-    `SELECT id, shipment, reason, initiated, stage, customer, refund
-     FROM shipment_returns
-     WHERE created_at >= $1 AND created_at <= $2
-     ORDER BY created_at DESC
-     LIMIT 200`,
-    [from, to]
-  );
-  return { items: rows };
+  const items = await prisma.shipmentReturn.findMany({
+    where: { createdAt: { gte: new Date(from), lte: new Date(to) } },
+    select: { id: true, shipment: true, reason: true, initiated: true, stage: true, customer: true, refund: true },
+    orderBy: { createdAt: "desc" },
+    take: 200
+  });
+  return { items };
 });
 app.get("/exceptions", async (request) => {
   const { from, to } = parseRange(request.query as { from?: string; to?: string });
-  const { rows } = await pool.query(
-    `SELECT id, shipment, kind, severity, age, owner_name AS owner
-     FROM shipment_exceptions
-     WHERE created_at >= $1 AND created_at <= $2
-     ORDER BY created_at DESC
-     LIMIT 200`,
-    [from, to]
-  );
-  return { items: rows };
+  const rows = await prisma.shipmentException.findMany({
+    where: { createdAt: { gte: new Date(from), lte: new Date(to) } },
+    select: { id: true, shipment: true, kind: true, severity: true, age: true, ownerName: true },
+    orderBy: { createdAt: "desc" },
+    take: 200
+  });
+  return { items: rows.map((r) => ({ id: r.id, shipment: r.shipment, kind: r.kind, severity: r.severity, age: r.age, owner: r.ownerName })) };
 });
 app.get("/returns/metrics", async (request) => {
   const { from, to } = parseRange(request.query as { from?: string; to?: string });
+  const range = { createdAt: { gte: new Date(from), lte: new Date(to) } };
   return {
-    openExceptions: Number(
-      (await pool.query(`SELECT COUNT(*)::int AS c FROM shipment_exceptions WHERE created_at >= $1 AND created_at <= $2`, [from, to])).rows[0]?.c ?? 0
-    ),
-    activeReturns: Number(
-      (await pool.query(`SELECT COUNT(*)::int AS c FROM shipment_returns WHERE created_at >= $1 AND created_at <= $2`, [from, to])).rows[0]?.c ?? 0
-    ),
+    openExceptions: await prisma.shipmentException.count({ where: range }),
+    activeReturns: await prisma.shipmentReturn.count({ where: range }),
     refunded24h: "Rs 0",
     returnRatePct: 3.4
   };
 });
 app.get("/exceptions/taxonomy", async (request) => {
   const { from, to } = parseRange(request.query as { from?: string; to?: string });
-  const total = Number(
-    (await pool.query(`SELECT COUNT(*)::int AS c FROM shipment_exceptions WHERE created_at >= $1 AND created_at <= $2`, [from, to])).rows[0]?.c ?? 0
-  );
-  const { rows } = await pool.query(
-    `SELECT kind, COUNT(*)::int AS n
-     FROM shipment_exceptions
-     WHERE created_at >= $1 AND created_at <= $2
-     GROUP BY kind
-     ORDER BY n DESC
-     LIMIT 10`,
-    [from, to]
-  );
+  const range = { createdAt: { gte: new Date(from), lte: new Date(to) } };
+  const total = await prisma.shipmentException.count({ where: range });
+  const grouped = await prisma.shipmentException.groupBy({
+    by: ["kind"],
+    where: range,
+    _count: { kind: true },
+    orderBy: { _count: { kind: "desc" } },
+    take: 10
+  });
   return {
-    items: rows.map((r: { kind: string; n: number | string }) => {
-      const pct = total > 0 ? Math.round((Number(r.n) / total) * 100) : 0;
+    items: grouped.map((r) => {
+      const n = r._count.kind;
+      const pct = total > 0 ? Math.round((n / total) * 100) : 0;
       return {
         kind: r.kind,
-        n: Number(r.n),
+        n,
         pct,
         tone: pct >= 30 ? "err" : pct >= 20 ? "warn" : "neutral"
       };
@@ -190,37 +162,26 @@ app.get("/exceptions/taxonomy", async (request) => {
 });
 app.get("/:id", async (request) => {
   const { id } = request.params as { id: string };
-  const shipment = (
-    await pool.query(
-      `SELECT id, "from", "to", weight, status, priority, courier, placed, eta, risk, items, transit_minutes
-       FROM shipment_records
-       WHERE id = $1`,
-      [id]
-    )
-  ).rows[0];
-  return { ...(shipment ?? { id }), history: [] };
+  const shipment = await prisma.shipmentRecord.findUnique({ where: { id }, select: SHIPMENT_SELECT });
+  return { ...(shipment ? shipmentDto(shipment) : { id }), history: [] };
 });
 app.get("/:id/timeline", async (request) => {
   const { id } = request.params as { id: string };
-  const { rows } = await pool.query(
-    `SELECT t, label, descr AS desc, done, active
-     FROM shipment_timelines
-     WHERE shipment_id = $1
-     ORDER BY created_at ASC`,
-    [id]
-  );
-  return { items: rows };
+  const rows = await prisma.shipmentTimeline.findMany({
+    where: { shipmentId: id },
+    select: { t: true, label: true, descr: true, done: true, active: true },
+    orderBy: { createdAt: "asc" }
+  });
+  return { items: rows.map((r) => ({ t: r.t, label: r.label, desc: r.descr, done: r.done, active: r.active })) };
 });
 app.get("/:id/audit", async (request) => {
   const { id } = request.params as { id: string };
-  const { rows } = await pool.query(
-    `SELECT t, actor, action, reason
-     FROM shipment_audits_v2
-     WHERE shipment_id = $1
-     ORDER BY created_at DESC`,
-    [id]
-  );
-  return { items: rows };
+  const items = await prisma.shipmentAudit.findMany({
+    where: { shipmentId: id },
+    select: { t: true, actor: true, action: true, reason: true },
+    orderBy: { createdAt: "desc" }
+  });
+  return { items };
 });
 
 const actorSchema = z.object({
@@ -229,11 +190,9 @@ const actorSchema = z.object({
 });
 
 async function appendAudit(shipmentId: string, actor: string, action: string, reason: string): Promise<void> {
-  await pool.query(
-    `INSERT INTO shipment_audits_v2 (id, shipment_id, t, actor, action, reason)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
-    [crypto.randomUUID(), shipmentId, new Date().toISOString(), actor, action, reason]
-  );
+  await prisma.shipmentAudit.create({
+    data: { id: crypto.randomUUID(), shipmentId, t: new Date().toISOString(), actor, action, reason }
+  });
 }
 
 // Canonical lifecycle steps. Kept identical to the seed (scripts/seed.ts) so that
@@ -259,17 +218,20 @@ function doneIdxForStatus(status: string): number {
 // Guarantees a shipment has the 5 canonical lifecycle rows (e.g. shipments created
 // via POST / have none until now).
 async function ensureTimeline(shipmentId: string): Promise<void> {
-  const count = Number(
-    (await pool.query(`SELECT COUNT(*)::int AS c FROM shipment_timelines WHERE shipment_id = $1`, [shipmentId])).rows[0]?.c ?? 0
-  );
+  const count = await prisma.shipmentTimeline.count({ where: { shipmentId } });
   if (count > 0) return;
-  for (const label of LIFECYCLE_STEPS) {
-    await pool.query(
-      `INSERT INTO shipment_timelines (id, shipment_id, t, label, descr, done, active)
-       VALUES ($1, $2, $3, $4, $5, FALSE, FALSE)`,
-      [crypto.randomUUID(), shipmentId, new Date().toISOString(), label, label]
-    );
-  }
+  const now = new Date().toISOString();
+  await prisma.shipmentTimeline.createMany({
+    data: LIFECYCLE_STEPS.map((label) => ({
+      id: crypto.randomUUID(),
+      shipmentId,
+      t: now,
+      label,
+      descr: label,
+      done: false,
+      active: false
+    }))
+  });
 }
 
 // Recomputes done/active flags for the canonical timeline steps from the shipment's
@@ -277,9 +239,11 @@ async function ensureTimeline(shipmentId: string): Promise<void> {
 // Optionally stamps the freshly-reached step with a new timestamp + description.
 async function syncTimelineToStatus(shipmentId: string, status: string, descrOverride?: string): Promise<void> {
   await ensureTimeline(shipmentId);
-  const rows = (
-    await pool.query(`SELECT id FROM shipment_timelines WHERE shipment_id = $1 ORDER BY created_at ASC`, [shipmentId])
-  ).rows as Array<{ id: string }>;
+  const rows = await prisma.shipmentTimeline.findMany({
+    where: { shipmentId },
+    select: { id: true },
+    orderBy: { createdAt: "asc" }
+  });
   if (rows.length === 0) return;
 
   const doneIdx = doneIdxForStatus(status);
@@ -289,30 +253,17 @@ async function syncTimelineToStatus(shipmentId: string, status: string, descrOve
     const done = i < doneIdx;
     const active = !done && i === doneIdx;
     const justReached = active || (done && i === doneIdx - 1);
-    if (justReached) {
-      await pool.query(
-        `UPDATE shipment_timelines
-         SET done = $2, active = $3, t = $4${descrOverride ? ", descr = $5" : ""}
-         WHERE id = $1`,
-        descrOverride
-          ? [rows[i]!.id, done, active, now, descrOverride]
-          : [rows[i]!.id, done, active, now]
-      );
-    } else {
-      await pool.query(`UPDATE shipment_timelines SET done = $2, active = $3 WHERE id = $1`, [rows[i]!.id, done, active]);
-    }
+    await prisma.shipmentTimeline.update({
+      where: { id: rows[i]!.id },
+      data: justReached
+        ? { done, active, t: now, ...(descrOverride ? { descr: descrOverride } : {}) }
+        : { done, active }
+    });
   }
 }
 
-async function getShipmentRow(id: string) {
-  return (
-    await pool.query(
-      `SELECT id, "from", "to", weight, status, priority, courier, placed, eta, risk, items, transit_minutes
-       FROM shipment_records
-       WHERE id = $1`,
-      [id]
-    )
-  ).rows[0];
+async function getShipmentRow(id: string): Promise<ShipmentRow | null> {
+  return prisma.shipmentRecord.findUnique({ where: { id }, select: SHIPMENT_SELECT });
 }
 
 app.post("/:id/escalate", async (request) => {
@@ -324,31 +275,31 @@ app.post("/:id/escalate", async (request) => {
   const reason = body.reason ?? "Manual escalation from operations console";
   await appendAudit(id, body.actor, "exception_escalated", reason);
 
-  const existing = await pool.query(
-    `SELECT id FROM shipment_exceptions WHERE shipment = $1 AND kind = 'escalated' LIMIT 1`,
-    [id]
-  );
-  let exceptionId = existing.rows[0]?.id as string | undefined;
+  const existing = await prisma.shipmentException.findFirst({
+    where: { shipment: id, kind: "escalated" },
+    select: { id: true }
+  });
+  let exceptionId = existing?.id;
   if (!exceptionId) {
     exceptionId = `EX-${id.replace(/\W/g, "").slice(-6)}-${Math.floor(Math.random() * 900 + 100)}`;
-    await pool.query(
-      `INSERT INTO shipment_exceptions (id, shipment, kind, severity, age, owner_name)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [exceptionId, id, "escalated", "high", "just now", body.actor]
-    );
+    await prisma.shipmentException.create({
+      data: { id: exceptionId, shipment: id, kind: "escalated", severity: "high", age: "just now", ownerName: body.actor }
+    });
   }
 
   if (String(shipment.status).toLowerCase() !== "delivered") {
-    await pool.query(`UPDATE shipment_records SET status = 'exception' WHERE id = $1`, [id]);
+    await prisma.shipmentRecord.update({ where: { id }, data: { status: "exception" } });
   }
 
   const updated = await getShipmentRow(id);
   await syncTimelineToStatus(id, String(updated?.status ?? shipment.status), `Escalated: ${reason}`);
-  const { rows: auditRows } = await pool.query(
-    `SELECT t, actor, action, reason FROM shipment_audits_v2 WHERE shipment_id = $1 ORDER BY created_at DESC LIMIT 20`,
-    [id]
-  );
-  return { ok: true, shipment: updated, exceptionId, audit: auditRows };
+  const auditRows = await prisma.shipmentAudit.findMany({
+    where: { shipmentId: id },
+    select: { t: true, actor: true, action: true, reason: true },
+    orderBy: { createdAt: "desc" },
+    take: 20
+  });
+  return { ok: true, shipment: updated ? shipmentDto(updated) : null, exceptionId, audit: auditRows };
 });
 
 const shipmentActionSchema = z.object({
@@ -369,28 +320,28 @@ app.post("/:id/actions", async (request) => {
 
   switch (body.action) {
     case "mark_delivered":
-      await pool.query(`UPDATE shipment_records SET status = 'delivered', eta = 'delivered' WHERE id = $1`, [id]);
+      await prisma.shipmentRecord.update({ where: { id }, data: { status: "delivered", eta: "delivered" } });
       auditReason = body.reason ?? "Marked delivered from actions menu";
       break;
     case "schedule_reattempt":
-      await pool.query(`UPDATE shipment_records SET status = 'attempted', eta = '19:30 today' WHERE id = $1`, [id]);
+      await prisma.shipmentRecord.update({ where: { id }, data: { status: "attempted", eta: "19:30 today" } });
       auditAction = "reattempt_scheduled";
       auditReason = body.reason ?? "Reattempt scheduled for 19:30";
       break;
     case "reassign_courier": {
       const courier = `C-${Math.floor(1000 + Math.random() * 9000)}`;
-      await pool.query(`UPDATE shipment_records SET courier = $2 WHERE id = $1`, [id, courier]);
+      await prisma.shipmentRecord.update({ where: { id }, data: { courier } });
       auditAction = "courier_assigned";
       auditReason = body.reason ?? `Reassigned to ${courier}`;
       break;
     }
     case "initiate_return":
-      await pool.query(`UPDATE shipment_records SET status = 'returned' WHERE id = $1`, [id]);
+      await prisma.shipmentRecord.update({ where: { id }, data: { status: "returned" } });
       auditAction = "return_initiated";
       auditReason = body.reason ?? "Return initiated from actions menu";
       break;
     case "cancel_shipment":
-      await pool.query(`UPDATE shipment_records SET status = 'failed', courier = '-' WHERE id = $1`, [id]);
+      await prisma.shipmentRecord.update({ where: { id }, data: { status: "failed", courier: "-" } });
       auditAction = "shipment_cancelled";
       auditReason = body.reason ?? "Cancelled from actions menu";
       break;
@@ -404,11 +355,13 @@ app.post("/:id/actions", async (request) => {
   if (String(updated?.status ?? "") !== String(shipment.status ?? "")) {
     await syncTimelineToStatus(id, String(updated?.status ?? shipment.status), auditReason);
   }
-  const { rows: auditRows } = await pool.query(
-    `SELECT t, actor, action, reason FROM shipment_audits_v2 WHERE shipment_id = $1 ORDER BY created_at DESC LIMIT 20`,
-    [id]
-  );
-  return { ok: true, shipment: updated, audit: auditRows };
+  const auditRows = await prisma.shipmentAudit.findMany({
+    where: { shipmentId: id },
+    select: { t: true, actor: true, action: true, reason: true },
+    orderBy: { createdAt: "desc" },
+    take: 20
+  });
+  return { ok: true, shipment: updated ? shipmentDto(updated) : null, audit: auditRows };
 });
 
 app.patch("/:id", async () => ({ ok: true }));
@@ -422,5 +375,4 @@ app.patch("/:id/status", async (request) => {
 app.post("/:id/returns", async () => ({ ok: true, status: "RETURNED" }));
 
 const port = Number(process.env.SHIPMENT_SERVICE_PORT ?? 4002);
-await ensureSchema();
 await app.listen({ port, host: "0.0.0.0" });

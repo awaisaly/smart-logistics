@@ -185,6 +185,10 @@
     flex-direction: column;
     gap: 16px;
     -webkit-overflow-scrolling: touch;
+    /* Establish a query container so grids below collapse based on the actual
+       content width (which the sidebar + AI panel shrink), not the viewport. */
+    container-type: inline-size;
+    container-name: sl-body;
   }
 
   .sl-grid {
@@ -207,6 +211,32 @@
   }
   .sl-grid[data-cols="12"] > :nth-child(2) {
     grid-column: span 4;
+  }
+
+  /* Container-query reflow: collapse grids when the content area itself gets
+     narrow, regardless of viewport width (accounts for sidebar + AI panel). */
+  @container sl-body (max-width: 780px) {
+    .sl-grid[data-cols="12"] {
+      grid-template-columns: 1fr;
+    }
+    .sl-grid[data-cols="12"] > * {
+      grid-column: 1 / -1 !important;
+    }
+    .sl-grid[data-cols="6"] {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
+
+  @container sl-body (max-width: 520px) {
+    .sl-grid[data-cols="6"] {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @container sl-body (max-width: 360px) {
+    .sl-grid[data-cols="6"] {
+      grid-template-columns: 1fr;
+    }
   }
 
   .sl-scroll-x {

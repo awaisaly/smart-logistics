@@ -13,13 +13,13 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@prisma/client": "^6.19.3",
     "@smartlogistics/shared-middleware": "workspace:*",
     "fastify": "^4.28.1",
-    "pg": "^8.21.0",
     "zod": "^3.24.2"
   },
   "devDependencies": {
-    "@types/pg": "^8.20.0",
+    "prisma": "^6.19.3",
     "tsx": "^4.20.3",
     "typescript": "^5.8.3"
   }

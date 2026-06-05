@@ -1,0 +1,74 @@
+// user-service data model. Tables are mapped to their existing snake_case names
+// so the schema can be pushed onto the already-seeded database without renames.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Role {
+  id          Int      @id @default(autoincrement())
+  key         String   @unique
+  label       String
+  description String?
+  // page ids the role can see in the frontend nav/routes
+  pages       Json     @default("[]")
+  // gateway path prefixes the role is allowed to call
+  apiPrefixes Json     @default("[]") @map("api_prefixes")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  users User[]
+
+  @@map("roles")
+}
+
+model User {
+  id           String    @id
+  email        String    @unique
+  passwordHash String    @map("password_hash")
+  // Denormalized role key (= Role.key) kept for backward-compatible responses.
+  role         String
+  roleId       Int?      @map("role_id")
+  fullName     String?   @map("full_name")
+  phone        String?
+  employeeId   String?   @map("employee_id")
+  region       String?
+  status       String    @default("active")
+  lastLoginAt  DateTime? @map("last_login_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  roleRef      Role?         @relation(fields: [roleId], references: [id])
+  adminProfile AdminProfile?
+
+  @@map("users_v2")
+}
+
+model AdminProfile {
+  userId        String   @id @map("user_id")
+  accessLevel   String   @default("standard") @map("access_level")
+  managedRegions Json    @default("[]") @map("managed_regions")
+  canManageUsers Boolean @default(false) @map("can_manage_users")
+  notes         String?
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("admin_profiles")
+}
+
+model AuthToken {
+  id        String   @id
+  userId    String   @map("user_id")
+  kind      String
+  token     String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([token])
+  @@index([userId])
+  @@map("auth_tokens")
+}

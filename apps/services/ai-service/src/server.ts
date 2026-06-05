@@ -10,7 +10,7 @@ loadDotenv({ path: path.resolve(__dirname, "../../../../.env"), quiet: true, ove
 import Fastify from "fastify";
 import { z } from "zod";
 import { buildLogger, setupMetrics, counter } from "@smartlogistics/shared-middleware";
-import { Pool } from "pg";
+import { prisma } from "./db.js";
 import { randomUUID } from "node:crypto";
 import { streamText, stepCountIs } from "ai";
 import { createGroq } from "@ai-sdk/groq";
@@ -29,11 +29,6 @@ app.addHook("onRequest", async (req) => {
   if (req.url === "/health" || req.url.startsWith("/metrics")) return;
   lastClientActivityAt = Date.now();
 });
-const pool = new Pool({
-  connectionString:
-    process.env.DATABASE_URL ??
-    `postgresql://${process.env.POSTGRES_USER ?? "smartlogistics"}:${process.env.POSTGRES_PASSWORD ?? "smartlogistics"}@${process.env.POSTGRES_HOST ?? "localhost"}:${process.env.POSTGRES_PORT ?? "5438"}/ai_service`
-});
 
 const GROQ_API_KEY = process.env.GROQ_API_KEY?.trim() ?? "";
 const GROQ_MODEL = process.env.GROQ_MODEL?.trim() || "llama-3.3-70b-versatile";
@@ -48,53 +43,15 @@ const SUGGESTIONS_REFRESH_MS = Math.max(15000, Number(process.env.SUGGESTIONS_RE
 
 const opsTools = buildOpsTools(INTERNAL_GATEWAY_URL);
 
-const ensureSchema = async () => {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS ai_sessions (
-      id UUID PRIMARY KEY,
-      user_id UUID,
-      started_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS ai_messages (
-      id UUID PRIMARY KEY,
-      session_id UUID NOT NULL,
-      role TEXT NOT NULL,
-      content TEXT NOT NULL,
-      tools JSONB NOT NULL DEFAULT '[]'::jsonb,
-      grounded JSONB NOT NULL DEFAULT '[]'::jsonb,
-      latency_ms INTEGER,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    ALTER TABLE ai_messages ADD COLUMN IF NOT EXISTS tools JSONB NOT NULL DEFAULT '[]'::jsonb;
-    ALTER TABLE ai_messages ADD COLUMN IF NOT EXISTS grounded JSONB NOT NULL DEFAULT '[]'::jsonb;
-    ALTER TABLE ai_messages ADD COLUMN IF NOT EXISTS latency_ms INTEGER;
-    CREATE TABLE IF NOT EXISTS ai_artifacts (
-      kind TEXT PRIMARY KEY,
-      payload JSONB NOT NULL DEFAULT '[]'::jsonb,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS ai_suggestion_feedback (
-      suggestion_id TEXT PRIMARY KEY,
-      status TEXT NOT NULL,
-      actor TEXT NOT NULL,
-      note TEXT,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
-};
-
 const readArtifact = async <T>(kind: string, fallback: T): Promise<T> => {
-  const row = (await pool.query(`SELECT payload FROM ai_artifacts WHERE kind = $1`, [kind])).rows[0];
+  const row = await prisma.aiArtifact.findUnique({ where: { kind }, select: { payload: true } });
   return (row?.payload as T) ?? fallback;
 };
 
 const DEFAULT_SESSION_ID = "00000000-0000-0000-0000-000000000001";
 
 const ensureDefaultSession = async (): Promise<string> => {
-  await pool.query(
-    `INSERT INTO ai_sessions (id) VALUES ($1) ON CONFLICT (id) DO NOTHING`,
-    [DEFAULT_SESSION_ID]
-  );
+  await prisma.aiSession.upsert({ where: { id: DEFAULT_SESSION_ID }, create: { id: DEFAULT_SESSION_ID }, update: {} });
   return DEFAULT_SESSION_ID;
 };
 
@@ -109,23 +66,21 @@ type StoredMessage = {
 };
 
 const recentMessages = async (sessionId: string, limit = 16): Promise<StoredMessage[]> => {
-  const { rows } = await pool.query(
-    `SELECT id, role, content AS text, tools, grounded, latency_ms, created_at
-     FROM ai_messages
-     WHERE session_id = $1
-     ORDER BY created_at DESC
-     LIMIT $2`,
-    [sessionId, limit]
-  );
+  const rows = await prisma.aiMessage.findMany({
+    where: { sessionId },
+    select: { id: true, role: true, content: true, tools: true, grounded: true, latencyMs: true, createdAt: true },
+    orderBy: { createdAt: "desc" },
+    take: limit
+  });
   return rows
-    .map((r: Record<string, unknown>) => ({
+    .map((r) => ({
       id: String(r.id),
       role: String(r.role) as StoredMessage["role"],
-      text: String(r.text ?? ""),
+      text: String(r.content ?? ""),
       tools: Array.isArray(r.tools) ? (r.tools as string[]) : [],
       grounded: Array.isArray(r.grounded) ? (r.grounded as string[]) : [],
-      latencyMs: typeof r.latency_ms === "number" ? r.latency_ms : null,
-      createdAt: String(r.created_at)
+      latencyMs: typeof r.latencyMs === "number" ? r.latencyMs : null,
+      createdAt: r.createdAt.toISOString()
     }))
     .reverse();
 };
@@ -139,19 +94,17 @@ const insertMessage = async (params: {
   latencyMs?: number;
 }): Promise<string> => {
   const id = randomUUID();
-  await pool.query(
-    `INSERT INTO ai_messages (id, session_id, role, content, tools, grounded, latency_ms)
-     VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7)`,
-    [
+  await prisma.aiMessage.create({
+    data: {
       id,
-      params.sessionId,
-      params.role,
-      params.text,
-      JSON.stringify(params.tools ?? []),
-      JSON.stringify(params.grounded ?? []),
-      params.latencyMs ?? null
-    ]
-  );
+      sessionId: params.sessionId,
+      role: params.role,
+      content: params.text,
+      tools: params.tools ?? [],
+      grounded: params.grounded ?? [],
+      latencyMs: params.latencyMs ?? null
+    }
+  });
   return id;
 };
 
@@ -342,7 +295,7 @@ const stubReply = (prompt: string): string => {
 app.delete("/assistant/history", async (request) => {
   const { sessionId } = (request.query ?? {}) as { sessionId?: string };
   const session = sessionId ?? (await ensureDefaultSession());
-  await pool.query(`DELETE FROM ai_messages WHERE session_id = $1`, [session]);
+  await prisma.aiMessage.deleteMany({ where: { sessionId: session } });
   return { ok: true, sessionId: session };
 });
 
@@ -371,23 +324,22 @@ type SuggestionsMeta = {
 };
 
 const readSuggestionsMeta = async (): Promise<SuggestionsMeta> => {
-  const row = (await pool.query(`SELECT payload, updated_at FROM ai_artifacts WHERE kind = 'suggestions_meta'`)).rows[0];
+  const row = await prisma.aiArtifact.findUnique({
+    where: { kind: "suggestions_meta" },
+    select: { payload: true, updatedAt: true }
+  });
   if (!row) return { mode: "seed" };
   const payload = (row.payload ?? {}) as SuggestionsMeta;
-  return { ...payload, generatedAt: payload.generatedAt ?? new Date(row.updated_at).toISOString() };
+  return { ...payload, generatedAt: payload.generatedAt ?? row.updatedAt.toISOString() };
 };
 
 app.get("/suggestions", async (request) => {
   const query = (request.query ?? {}) as { pageHint?: string };
   const items = await readArtifact<Array<Record<string, unknown>>>("suggestions", []);
   const meta = await readSuggestionsMeta();
-  const { rows } = await pool.query(`SELECT suggestion_id, status FROM ai_suggestion_feedback`);
-  const dismissed = new Set<string>(
-    rows.filter((r: { status: string }) => r.status === "dismissed").map((r: { suggestion_id: string }) => r.suggestion_id)
-  );
-  const accepted = new Set<string>(
-    rows.filter((r: { status: string }) => r.status === "accepted").map((r: { suggestion_id: string }) => r.suggestion_id)
-  );
+  const rows = await prisma.aiSuggestionFeedback.findMany({ select: { suggestionId: true, status: true } });
+  const dismissed = new Set<string>(rows.filter((r) => r.status === "dismissed").map((r) => r.suggestionId));
+  const accepted = new Set<string>(rows.filter((r) => r.status === "accepted").map((r) => r.suggestionId));
   let visible = items.filter((s) => !dismissed.has(String(s.id ?? "")));
   if (query.pageHint) {
     const hint = query.pageHint;
@@ -404,7 +356,7 @@ app.get("/suggestions", async (request) => {
 
 app.post("/suggestions/refresh", async (_request, reply) => {
   try {
-    const artifact = await refreshSuggestions({ pool, gatewayUrl: INTERNAL_GATEWAY_URL, groqApiKey: GROQ_ENABLED ? GROQ_API_KEY : null, model: GROQ_MODEL });
+    const artifact = await refreshSuggestions({ prisma, gatewayUrl: INTERNAL_GATEWAY_URL, groqApiKey: GROQ_ENABLED ? GROQ_API_KEY : null, model: GROQ_MODEL });
     return {
       ok: true,
       mode: artifact.mode,
@@ -436,12 +388,11 @@ app.post("/suggestions/:id/feedback", async (request, reply) => {
     reply.code(404);
     return { ok: false, error: "suggestion not found" };
   }
-  await pool.query(
-    `INSERT INTO ai_suggestion_feedback (suggestion_id, status, actor, note)
-     VALUES ($1, $2, $3, $4)
-     ON CONFLICT (suggestion_id) DO UPDATE SET status = EXCLUDED.status, actor = EXCLUDED.actor, note = EXCLUDED.note, created_at = NOW()`,
-    [id, body.status, actor, body.note ?? null]
-  );
+  await prisma.aiSuggestionFeedback.upsert({
+    where: { suggestionId: id },
+    create: { suggestionId: id, status: body.status, actor, note: body.note ?? null },
+    update: { status: body.status, actor, note: body.note ?? null, createdAt: new Date() }
+  });
   return { ok: true, suggestionId: id, status: body.status };
 });
 
@@ -460,7 +411,6 @@ app.get("/assistant/prompts", async () => ({ items: await readArtifact("assistan
 app.get("/reports/daily-dispatch", async () => ({ report: await readArtifact("daily_dispatch_report", "No report generated yet.") }));
 
 const port = Number(process.env.AI_SERVICE_PORT ?? 4009);
-await ensureSchema();
 
 // Event-driven indexing hook: count operational changes flagged for retrieval.
 // (The assistant answers via live tool-calling; this is the embedding trigger.)
@@ -478,7 +428,7 @@ app.log.info(
 let refreshInFlight: Promise<SuggestionsArtifact> | null = null;
 const triggerRefresh = (): Promise<SuggestionsArtifact> => {
   if (refreshInFlight) return refreshInFlight;
-  refreshInFlight = refreshSuggestions({ pool, gatewayUrl: INTERNAL_GATEWAY_URL, groqApiKey: GROQ_ENABLED ? GROQ_API_KEY : null, model: GROQ_MODEL })
+  refreshInFlight = refreshSuggestions({ prisma, gatewayUrl: INTERNAL_GATEWAY_URL, groqApiKey: GROQ_ENABLED ? GROQ_API_KEY : null, model: GROQ_MODEL })
     .then((artifact) => {
       app.log.info(
         { mode: artifact.mode, count: artifact.items.length, candidates: artifact.candidatesCount, notes: artifact.notes },

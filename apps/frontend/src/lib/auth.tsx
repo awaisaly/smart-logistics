@@ -1,10 +1,14 @@
 import React from "react";
-import { API_BASE } from "@/lib/api";
+import { API_BASE, AUTH_CHANGED_EVENT } from "@/lib/api";
 
 export type AuthUser = {
   id?: string;
   email: string;
   role: string;
+  // Human-readable role name and the pages this role may access — both come
+  // from the backend so RBAC is data-driven (no hardcoded frontend role map).
+  label?: string;
+  pages?: string[];
   accessToken?: string;
   refreshToken?: string;
 };
@@ -38,11 +42,6 @@ function readStoredAuth(): AuthUser | null {
   }
 }
 
-/** Read the access token outside React (used by the api layer to attach headers). */
-export function getAuthToken(): string | null {
-  return readStoredAuth()?.accessToken ?? null;
-}
-
 export function AuthProvider({ children }: { children: React.ReactNode }): JSX.Element {
   const [user, setUser] = React.useState<AuthUser | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -51,6 +50,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }): JSX.E
   React.useEffect(() => {
     setUser(readStoredAuth());
     setLoading(false);
+
+    // Keep React state in sync with persisted auth when it changes outside the
+    // provider: token refresh / forced logout from the api layer (same tab) and
+    // login/logout in another tab (the native `storage` event).
+    const sync = (): void => setUser(readStoredAuth());
+    window.addEventListener("storage", sync);
+    window.addEventListener(AUTH_CHANGED_EVENT, sync);
+    return () => {
+      window.removeEventListener("storage", sync);
+      window.removeEventListener(AUTH_CHANGED_EVENT, sync);
+    };
   }, []);
 
   const persist = React.useCallback((next: AuthUser | null) => {
@@ -77,7 +87,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): JSX.E
           error?: string;
           accessToken?: string;
           refreshToken?: string;
-          user?: { id?: string; email: string; role: string };
+          user?: { id?: string; email: string; role: string; label?: string; pages?: string[] };
         };
         if (!res.ok || data.ok === false || !data.accessToken || !data.user) {
           return { ok: false, error: data.error ?? "Invalid email or password" };
@@ -86,6 +96,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }): JSX.E
           id: data.user.id,
           email: data.user.email,
           role: data.user.role,
+          label: data.user.label,
+          pages: data.user.pages,
           accessToken: data.accessToken,
           refreshToken: data.refreshToken,
         };

@@ -3,18 +3,26 @@ import { Navigate, useNavigate } from "@tanstack/react-router";
 import { fetchJson } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
-const DEMO_PASSWORD = "smartlogistics";
+// Demo password is configurable so the frontend stays in sync with the backend
+// (DEMO_PASSWORD) without editing source. Falls back to the seeded default.
+const DEMO_PASSWORD = import.meta.env.VITE_DEMO_PASSWORD ?? "smartlogistics";
 
-type AccountRow = { id?: string; email: string; role: string };
+// The canonical owner-admin (seeded + ensured on user-service startup). The
+// "Administrator" quick-demo button signs in as this account when available.
+const PRIMARY_ADMIN_EMAIL = "awais.ali@smartlogistics.example";
 
-type RolePreset = { role: string; label: string; blurb: string };
+type AccountRow = { email: string; role: string; label?: string; name?: string };
 
-const ROLE_PRESETS: RolePreset[] = [
-  { role: "admin", label: "Administrator", blurb: "Full operational control" },
-  { role: "customer_support", label: "Customer Support", blurb: "Cases, returns & SLAs" },
-  { role: "warehouse_operator", label: "Warehouse Operator", blurb: "Inbound & outbound flows" },
-  { role: "courier", label: "Courier", blurb: "Routes & deliveries" },
-];
+// Presentation-only copy + preferred ordering for the quick-access buttons. The
+// roles/labels themselves are derived from the seeded accounts the backend
+// returns, so this map only decorates roles that actually exist.
+const ROLE_BLURBS: Record<string, string> = {
+  admin: "Full operational control",
+  customer_support: "Cases, returns & SLAs",
+  warehouse_operator: "Inbound & outbound flows",
+  courier: "Routes & deliveries",
+};
+const ROLE_ORDER = ["admin", "customer_support", "warehouse_operator", "courier"];
 
 const FEATURES = [
   "Live dispatch monitoring across every workflow",
@@ -52,17 +60,38 @@ export function LoginPage(): JSX.Element {
   const [accounts, setAccounts] = React.useState<AccountRow[]>([]);
 
   React.useEffect(() => {
-    void fetchJson<{ items?: AccountRow[] }>("/users")
+    // Public endpoint: avoids an unauthenticated /users call (which the gateway
+    // now restricts to admins).
+    void fetchJson<{ items?: AccountRow[] }>("/auth/demo-accounts")
       .then((res) => setAccounts(res.items ?? []))
       .catch(() => undefined);
   }, []);
+
+  // Distinct roles present in the seeded accounts, labelled by the backend and
+  // ordered by ROLE_ORDER (unknown roles fall to the end).
+  const rolePresets = React.useMemo(() => {
+    const byRole = new Map<string, { role: string; label: string }>();
+    for (const a of accounts) {
+      if (!byRole.has(a.role)) byRole.set(a.role, { role: a.role, label: a.label ?? a.role });
+    }
+    const rank = (role: string): number => {
+      const i = ROLE_ORDER.indexOf(role);
+      return i === -1 ? ROLE_ORDER.length : i;
+    };
+    return [...byRole.values()].sort((x, y) => rank(x.role) - rank(y.role));
+  }, [accounts]);
 
   if (!loading && user) {
     return <Navigate to="/overview" />;
   }
 
   const fillRole = (role: string): void => {
-    const match = accounts.find((a) => a.role === role) ?? accounts[0];
+    const pool = accounts.filter((a) => a.role === role);
+    // Surface Awais Ali as the demo admin; otherwise fall back to the first match.
+    const match =
+      (role === "admin" ? pool.find((a) => a.email === PRIMARY_ADMIN_EMAIL) : undefined) ??
+      pool[0] ??
+      accounts[0];
     if (!match) return;
     setEmail(match.email);
     setPassword(DEMO_PASSWORD);
@@ -179,22 +208,19 @@ export function LoginPage(): JSX.Element {
           </div>
 
           <div className="sl-login-roles">
-            {ROLE_PRESETS.map((preset) => {
-              const available = accounts.some((a) => a.role === preset.role);
-              return (
-                <button
-                  key={preset.role}
-                  type="button"
-                  className="sl-login-role"
-                  onClick={() => fillRole(preset.role)}
-                  disabled={pending || !available}
-                  title={available ? `Fill credentials for a ${preset.label}` : "No seeded account for this role"}
-                >
-                  <span className="sl-login-role-label">{preset.label}</span>
-                  <span className="sl-login-role-blurb">{preset.blurb}</span>
-                </button>
-              );
-            })}
+            {rolePresets.map((preset) => (
+              <button
+                key={preset.role}
+                type="button"
+                className="sl-login-role"
+                onClick={() => fillRole(preset.role)}
+                disabled={pending}
+                title={`Fill credentials for a ${preset.label}`}
+              >
+                <span className="sl-login-role-label">{preset.label}</span>
+                <span className="sl-login-role-blurb">{ROLE_BLURBS[preset.role] ?? "Demo account"}</span>
+              </button>
+            ))}
           </div>
 
           <p className="sl-login-hint">

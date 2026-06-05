@@ -1,0 +1,80 @@
+// shipment-service data model. Mapped to the existing snake_case tables so the
+// schema can be pushed onto the already-seeded database without renames.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model ShipmentRecord {
+  id             String   @id
+  from           String
+  to             String
+  weight         String
+  status         String
+  priority       String
+  courier        String
+  placed         String
+  eta            String
+  risk           Float    @default(0)
+  items          Int      @default(1)
+  transitMinutes Int      @default(0) @map("transit_minutes")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@map("shipment_records")
+}
+
+model ShipmentReturn {
+  id        String   @id
+  shipment  String
+  reason    String
+  initiated String
+  stage     String
+  customer  String
+  refund    String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("shipment_returns")
+}
+
+model ShipmentException {
+  id        String   @id
+  shipment  String
+  kind      String
+  severity  String
+  age       String
+  ownerName String   @map("owner_name")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("shipment_exceptions")
+}
+
+model ShipmentTimeline {
+  id         String   @id
+  shipmentId String   @map("shipment_id")
+  t          String
+  label      String
+  descr      String
+  done       Boolean  @default(false)
+  active     Boolean  @default(false)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@map("shipment_timelines")
+}
+
+model ShipmentAudit {
+  id         String   @id
+  shipmentId String   @map("shipment_id")
+  t          String
+  actor      String
+  action     String
+  reason     String
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@map("shipment_audits_v2")
+}

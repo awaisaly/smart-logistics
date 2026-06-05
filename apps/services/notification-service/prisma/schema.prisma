@@ -1,0 +1,22 @@
+// notification-service data model. Mapped to existing snake_case tables.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model NotificationLog {
+  id        String   @id
+  eventId   String   @map("event_id")
+  channel   String
+  recipient String
+  status    String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("notification_log_v2")
+}

@@ -1,4 +1,5 @@
-import type { Pool } from "pg";
+import type { AiPrisma } from "./db.js";
+import { Prisma } from "./generated/prisma/index.js";
 import { generateObject, NoObjectGeneratedError } from "ai";
 import { createGroq } from "@ai-sdk/groq";
 import { z } from "zod";
@@ -396,12 +397,12 @@ export const polishWithGroq = async (
 };
 
 export const refreshSuggestions = async (params: {
-  pool: Pool;
+  prisma: AiPrisma;
   gatewayUrl: string;
   groqApiKey: string | null;
   model: string;
 }): Promise<SuggestionsArtifact> => {
-  const { pool, gatewayUrl, groqApiKey, model } = params;
+  const { prisma, gatewayUrl, groqApiKey, model } = params;
   const notes: string[] = [];
 
   let snapshot: OpsSnapshot;
@@ -440,24 +441,23 @@ export const refreshSuggestions = async (params: {
     notes: notes.length > 0 ? notes : undefined
   };
 
-  await pool.query(
-    `INSERT INTO ai_artifacts (kind, payload, updated_at) VALUES ($1, $2::jsonb, NOW())
-     ON CONFLICT (kind) DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()`,
-    ["suggestions", JSON.stringify(items)]
-  );
-  await pool.query(
-    `INSERT INTO ai_artifacts (kind, payload, updated_at) VALUES ($1, $2::jsonb, NOW())
-     ON CONFLICT (kind) DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()`,
-    [
-      "suggestions_meta",
-      JSON.stringify({
-        mode,
-        generatedAt: artifact.generatedAt,
-        candidatesCount: candidates.length,
-        notes: artifact.notes ?? []
-      })
-    ]
-  );
+  const itemsJson = items as unknown as Prisma.InputJsonValue;
+  const metaJson = {
+    mode,
+    generatedAt: artifact.generatedAt,
+    candidatesCount: candidates.length,
+    notes: artifact.notes ?? []
+  } as unknown as Prisma.InputJsonValue;
+  await prisma.aiArtifact.upsert({
+    where: { kind: "suggestions" },
+    create: { kind: "suggestions", payload: itemsJson, updatedAt: new Date() },
+    update: { payload: itemsJson, updatedAt: new Date() }
+  });
+  await prisma.aiArtifact.upsert({
+    where: { kind: "suggestions_meta" },
+    create: { kind: "suggestions_meta", payload: metaJson, updatedAt: new Date() },
+    update: { payload: metaJson, updatedAt: new Date() }
+  });
 
   return artifact;
 };

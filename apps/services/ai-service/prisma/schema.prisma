@@ -1,0 +1,50 @@
+// ai-service data model. Mapped to existing snake_case tables.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model AiSession {
+  id        String   @id @db.Uuid
+  userId    String?  @map("user_id") @db.Uuid
+  startedAt DateTime @default(now()) @map("started_at")
+
+  @@map("ai_sessions")
+}
+
+model AiMessage {
+  id        String   @id @db.Uuid
+  sessionId String   @map("session_id") @db.Uuid
+  role      String
+  content   String
+  tools     Json     @default("[]")
+  grounded  Json     @default("[]")
+  latencyMs Int?     @map("latency_ms")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("ai_messages")
+}
+
+model AiArtifact {
+  kind      String   @id
+  payload   Json     @default("[]")
+  updatedAt DateTime @default(now()) @map("updated_at")
+
+  @@map("ai_artifacts")
+}
+
+model AiSuggestionFeedback {
+  suggestionId String   @id @map("suggestion_id")
+  status       String
+  actor        String
+  note         String?
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("ai_suggestion_feedback")
+}
