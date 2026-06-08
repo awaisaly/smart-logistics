@@ -538,8 +538,9 @@ function genReturns(shipments: SeedShipment[]): SeedReturn[] {
 interface SeedException { id: string; code: string; shipmentId: string; shipmentTracking: string; kind: string; severity: string; age: string; owner: string; createdAt: Date }
 function genExceptions(shipments: SeedShipment[]): SeedException[] {
   const sample = pickN(shipments, Math.min(18, Math.floor(shipments.length * 0.05)));
-  return sample.map((s) => {
-    const createdAt = afterParent(s.createdAt);
+  return sample.map((s, i) => {
+    // Keep a handful of exceptions on today so the AI assistant and Returns page stay populated.
+    const createdAt = i < 5 ? dayOffsetCreatedAt(0) : afterParent(s.createdAt);
     return {
       id: randomUUID(),
       code: exceptionCode(),

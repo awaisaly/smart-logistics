@@ -16,6 +16,20 @@ import { streamText, stepCountIs } from "ai";
 import { createGroq } from "@ai-sdk/groq";
 import { refreshSuggestions, type SuggestionsArtifact } from "./suggestions.js";
 import { buildOpsTools } from "./tools/ops.js";
+import { gatewayHeaders, internalGatewayHeaders } from "./gateway-auth.js";
+
+/** Groq / provider errors are often plain objects, not Error instances. */
+const streamErrorMessage = (err: unknown): string => {
+  if (err instanceof Error) return err.message;
+  if (err && typeof err === "object" && "message" in err && typeof (err as { message: unknown }).message === "string") {
+    return (err as { message: string }).message;
+  }
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return String(err);
+  }
+};
 import { startEmbeddingTriggerConsumer } from "./consumers/embedding-trigger.consumer.js";
 
 const app = Fastify({ logger: buildLogger("ai-service") });
@@ -40,8 +54,6 @@ const INTERNAL_GATEWAY_URL =
   process.env.INTERNAL_API_GATEWAY_URL?.trim() ||
   `http://localhost:${process.env.API_GATEWAY_PORT ?? 4000}`;
 const SUGGESTIONS_REFRESH_MS = Math.max(15000, Number(process.env.SUGGESTIONS_REFRESH_MS ?? 60000));
-
-const opsTools = buildOpsTools(INTERNAL_GATEWAY_URL);
 
 const readArtifact = async <T>(kind: string, fallback: T): Promise<T> => {
   const row = await prisma.aiArtifact.findUnique({ where: { kind }, select: { payload: true } });
@@ -128,7 +140,8 @@ const buildSystemPrompt = async (contextKey?: string): Promise<string> => {
     "You are SmartLogistics' Operations Assistant.",
     "You help dispatch operators answer questions about shipments, couriers, warehouses, dispatch workflows, returns, exceptions, and analytics.",
     "Be concise (4–8 sentences), structured, and operationally useful. Use markdown bold (**...**) for key entities and numbers.",
-    "When you don't have specific data, say so plainly and suggest the next operational step.",
+    "For operational questions (exceptions, shipments, couriers, KPIs, workflows), call the appropriate tool first and answer from the returned data.",
+    "When a tool returns empty results, say so and suggest a concrete next step. Do not claim missing data if you have not called a tool.",
     "Never fabricate IDs (SL-, C-, W-) — refer to them only if the user mentions them.",
     "Always end with a short 'Suggested next step' line when applicable.",
     "",
@@ -190,6 +203,8 @@ app.post("/assistant/stream", async (request, reply) => {
         { role: "user" as const, content: body.prompt }
       ];
 
+      const opsTools = buildOpsTools(INTERNAL_GATEWAY_URL, gatewayHeaders(request.headers.authorization));
+
       const result = streamText({
         model: groqProvider(GROQ_MODEL),
         system: systemPrompt,
@@ -224,13 +239,12 @@ app.post("/assistant/stream", async (request, reply) => {
             sendEvent({
               type: "tool-error",
               toolName: part.toolName,
-              error: part.error instanceof Error ? part.error.message : String(part.error)
+              error: streamErrorMessage(part.error)
             });
             break;
           }
           case "error": {
-            const message = part.error instanceof Error ? part.error.message : String(part.error);
-            sendEvent({ type: "error", error: message });
+            sendEvent({ type: "error", error: streamErrorMessage(part.error) });
             break;
           }
           default:
@@ -356,7 +370,13 @@ app.get("/suggestions", async (request) => {
 
 app.post("/suggestions/refresh", async (_request, reply) => {
   try {
-    const artifact = await refreshSuggestions({ prisma, gatewayUrl: INTERNAL_GATEWAY_URL, groqApiKey: GROQ_ENABLED ? GROQ_API_KEY : null, model: GROQ_MODEL });
+    const artifact = await refreshSuggestions({
+      prisma,
+      gatewayUrl: INTERNAL_GATEWAY_URL,
+      gatewayHeaders: internalGatewayHeaders(),
+      groqApiKey: GROQ_ENABLED ? GROQ_API_KEY : null,
+      model: GROQ_MODEL
+    });
     return {
       ok: true,
       mode: artifact.mode,
@@ -428,7 +448,13 @@ app.log.info(
 let refreshInFlight: Promise<SuggestionsArtifact> | null = null;
 const triggerRefresh = (): Promise<SuggestionsArtifact> => {
   if (refreshInFlight) return refreshInFlight;
-  refreshInFlight = refreshSuggestions({ prisma, gatewayUrl: INTERNAL_GATEWAY_URL, groqApiKey: GROQ_ENABLED ? GROQ_API_KEY : null, model: GROQ_MODEL })
+  refreshInFlight = refreshSuggestions({
+    prisma,
+    gatewayUrl: INTERNAL_GATEWAY_URL,
+    gatewayHeaders: internalGatewayHeaders(),
+    groqApiKey: GROQ_ENABLED ? GROQ_API_KEY : null,
+    model: GROQ_MODEL
+  })
     .then((artifact) => {
       app.log.info(
         { mode: artifact.mode, count: artifact.items.length, candidates: artifact.candidatesCount, notes: artifact.notes },

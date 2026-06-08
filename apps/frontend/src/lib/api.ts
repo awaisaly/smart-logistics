@@ -131,6 +131,16 @@ export async function fetchJson<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+/** Skip the request when `allowed` is false; swallow failures (e.g. 403) for optional widgets. */
+export async function fetchJsonOptional<T>(path: string, allowed: boolean): Promise<T | null> {
+  if (!allowed) return null;
+  try {
+    return await fetchJson<T>(path);
+  } catch {
+    return null;
+  }
+}
+
 export async function postJson<T>(path: string, body: unknown): Promise<T> {
   const res = await authedFetch(path, {
     method: "POST",

@@ -86,7 +86,9 @@ export function AiPage(): JSX.Element {
       fetchJson<{ items?: Array<Record<string, unknown>> }>("/ai/assistant/prompts"),
       fetchJson<AiInfo>("/ai/info"),
     ]).then(([hist, sugg, tl, met, pr, inf]) => {
-      if (hist.status === "fulfilled") setMessages(hist.value.items ?? []);
+      if (hist.status === "fulfilled") {
+        setMessages((prev) => (prev.length > 0 ? prev : hist.value.items ?? []));
+      }
       if (sugg.status === "fulfilled") setSuggestions(sugg.value.items ?? []);
       if (tl.status === "fulfilled") setTools(tl.value.items ?? []);
       if (met.status === "fulfilled") setMetrics(met.value ?? {});
@@ -126,7 +128,6 @@ export function AiPage(): JSX.Element {
     const startedAt = performance.now();
     let assistantText = "";
     let toolStatus = "";
-    let added = false;
     let toolsRef: string[] = [];
     let groundedRef: string[] = [];
 
@@ -140,13 +141,13 @@ export function AiPage(): JSX.Element {
           streamed: true,
           ...(overrides ?? {}),
         };
-        if (!added) {
-          added = true;
-          return [...m, base];
+        const lastIdx = m.length - 1;
+        if (lastIdx >= 0 && m[lastIdx]?.role === "assistant") {
+          const next = [...m];
+          next[lastIdx] = base;
+          return next;
         }
-        const next = [...m];
-        next[next.length - 1] = base;
-        return next;
+        return [...m, base];
       });
     };
 
@@ -187,10 +188,16 @@ export function AiPage(): JSX.Element {
             toolStatus = "";
             const latencyMs = typeof event.latencyMs === "number" ? event.latencyMs : Math.round(performance.now() - startedAt);
             upsertAssistant({ latency: `${latencyMs}ms` });
-          } else if (event.type === "error" && typeof event.error === "string") {
+          } else if (event.type === "error") {
+            const errText =
+              typeof event.error === "string"
+                ? event.error
+                : event.error != null
+                  ? JSON.stringify(event.error)
+                  : "unknown";
             assistantText = assistantText
-              ? `${assistantText}\n\n_(stream interrupted: ${event.error})_`
-              : `Assistant error: ${event.error}`;
+              ? `${assistantText}\n\n_(stream interrupted: ${errText})_`
+              : `Assistant error: ${errText}`;
             upsertAssistant({ latency: "error" });
           }
         },
@@ -199,15 +206,10 @@ export function AiPage(): JSX.Element {
       .catch((err: unknown) => {
         const message = err instanceof Error ? err.message : "unknown";
         if (controller.signal.aborted) return;
-        if (!added) {
-          setMessages((m) => [
-            ...m,
-            { role: "assistant", text: `Assistant stream error: ${message}`, latency: "error" },
-          ]);
-        } else {
-          assistantText = `${assistantText}\n\n_(stream failed: ${message})_`;
-          upsertAssistant({ latency: "error" });
-        }
+        assistantText = assistantText
+          ? `${assistantText}\n\n_(stream failed: ${message})_`
+          : `Assistant stream error: ${message}`;
+        upsertAssistant({ latency: "error" });
       })
       .finally(() => {
         setStreaming(false);

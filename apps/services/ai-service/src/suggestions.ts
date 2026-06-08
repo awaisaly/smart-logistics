@@ -48,20 +48,6 @@ type OpsSnapshot = {
   };
 };
 
-const fetchWithTimeout = async <T>(url: string, timeoutMs = 3000): Promise<T | null> => {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) return null;
-    return (await res.json()) as T;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-};
-
 const numericLoad = (raw: unknown): number => {
   const n = Number(raw);
   return Number.isFinite(n) ? n : 0;
@@ -72,7 +58,24 @@ const utilisation = (load: number, capacity: number): number => {
   return load / capacity;
 };
 
-export const buildOpsSnapshot = async (gatewayUrl: string): Promise<OpsSnapshot> => {
+export const buildOpsSnapshot = async (
+  gatewayUrl: string,
+  headers: Record<string, string> = {}
+): Promise<OpsSnapshot> => {
+  const fetchWithTimeout = async <T>(url: string, timeoutMs = 3000): Promise<T | null> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { signal: controller.signal, headers });
+      if (!res.ok) return null;
+      return (await res.json()) as T;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
   const [shipResp, excResp, courResp, kpiResp, dispResp] = await Promise.all([
     fetchWithTimeout<{ items?: Array<Record<string, unknown>>; total?: number }>(`${gatewayUrl}/shipments?limit=500`),
     fetchWithTimeout<{ items?: Array<Record<string, unknown>> }>(`${gatewayUrl}/shipments/exceptions`),
@@ -399,6 +402,7 @@ export const polishWithGroq = async (
 export const refreshSuggestions = async (params: {
   prisma: AiPrisma;
   gatewayUrl: string;
+  gatewayHeaders?: Record<string, string>;
   groqApiKey: string | null;
   model: string;
 }): Promise<SuggestionsArtifact> => {
@@ -407,7 +411,7 @@ export const refreshSuggestions = async (params: {
 
   let snapshot: OpsSnapshot;
   try {
-    snapshot = await buildOpsSnapshot(gatewayUrl);
+    snapshot = await buildOpsSnapshot(gatewayUrl, params.gatewayHeaders ?? {});
   } catch (err) {
     notes.push(`snapshot failed: ${err instanceof Error ? err.message : "unknown"}`);
     snapshot = {

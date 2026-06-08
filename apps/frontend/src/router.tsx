@@ -1,7 +1,7 @@
 import React from "react";
 import { Link, Navigate, Outlet, createRootRoute, createRoute, createRouter, useNavigate, useRouterState } from "@tanstack/react-router";
 import { OverviewPage } from "@/pages/OverviewPage";
-import { ShipmentsPage, type ShipmentRow } from "@/pages/ShipmentsPage";
+import { ShipmentsPage } from "@/pages/ShipmentsPage";
 import { DispatchPage } from "@/pages/DispatchPage";
 import { WarehousePage } from "@/pages/WarehousePage";
 import { CouriersPage } from "@/pages/CouriersPage";
@@ -16,9 +16,9 @@ import { Icon, type IconName } from "@/components/ui/icon";
 import { routeContextKey } from "@/lib/ai-context";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
 import { AuthProvider, useAuth } from "@/lib/auth";
-import { canAccessPage, defaultRouteForUser, pageIdForPath, pagesForUser } from "@/lib/permissions";
+import { canAccessPage, canPerform, defaultRouteForUser, pageIdForPath, pagesForUser, PERMISSIONS } from "@/lib/permissions";
 import { DateRangeProvider } from "@/lib/date-range";
-import { fetchJson } from "@/lib/api";
+import { fetchJsonOptional } from "@/lib/api";
 
 type NavItem = {
   to: string;
@@ -219,6 +219,12 @@ function buildSearchHits(index: SearchIndex, query: string): SearchHit[] {
 function SearchDialog({ open, onClose }: { open: boolean; onClose: () => void }): JSX.Element | null {
   const navigate = useNavigate();
   const { user: authUser } = useAuth();
+  const perms = authUser?.permissions ?? [];
+  const canShipments = canPerform(perms, PERMISSIONS.SHIPMENTS_READ);
+  const canReturns = canPerform(perms, PERMISSIONS.RETURNS_READ);
+  const canCouriers = canPerform(perms, PERMISSIONS.COURIERS_READ);
+  const canWarehouse = canPerform(perms, PERMISSIONS.WAREHOUSE_READ);
+  const canDispatch = canPerform(perms, PERMISSIONS.DISPATCH_READ);
   const [query, setQuery] = React.useState("");
   const [index, setIndex] = React.useState<SearchIndex>(EMPTY_INDEX);
   const [loading, setLoading] = React.useState(false);
@@ -230,26 +236,25 @@ function SearchDialog({ open, onClose }: { open: boolean; onClose: () => void })
     setActiveIdx(0);
     inputRef.current?.focus();
     setLoading(true);
-    void Promise.allSettled([
-      fetchJson<{ items?: Array<Record<string, unknown>> }>("/shipments"),
-      fetchJson<{ items?: Array<Record<string, unknown>> }>("/shipments/returns"),
-      fetchJson<{ items?: Array<Record<string, unknown>> }>("/shipments/exceptions"),
-      fetchJson<{ items?: Array<Record<string, unknown>> }>("/couriers"),
-      fetchJson<{ items?: Array<Record<string, unknown>> }>("/warehouses"),
-      fetchJson<{ items?: Array<Record<string, unknown>> }>("/dispatch/workflows"),
-    ])
-      .then(([s, r, e, c, w, wf]) => {
+    void Promise.all([
+      fetchJsonOptional<{ items?: Array<Record<string, unknown>> }>("/shipments", canShipments),
+      fetchJsonOptional<{ items?: Array<Record<string, unknown>> }>("/shipments/returns", canReturns),
+      fetchJsonOptional<{ items?: Array<Record<string, unknown>> }>("/shipments/exceptions", canShipments),
+      fetchJsonOptional<{ items?: Array<Record<string, unknown>> }>("/couriers", canCouriers),
+      fetchJsonOptional<{ items?: Array<Record<string, unknown>> }>("/warehouses", canWarehouse),
+      fetchJsonOptional<{ items?: Array<Record<string, unknown>> }>("/dispatch/workflows", canDispatch),
+    ]).then(([s, r, e, c, w, wf]) => {
         setIndex({
-          shipments: s.status === "fulfilled" ? s.value.items ?? [] : [],
-          returns: r.status === "fulfilled" ? r.value.items ?? [] : [],
-          exceptions: e.status === "fulfilled" ? e.value.items ?? [] : [],
-          couriers: c.status === "fulfilled" ? c.value.items ?? [] : [],
-          warehouses: w.status === "fulfilled" ? w.value.items ?? [] : [],
-          workflows: wf.status === "fulfilled" ? wf.value.items ?? [] : [],
+          shipments: s?.items ?? [],
+          returns: r?.items ?? [],
+          exceptions: e?.items ?? [],
+          couriers: c?.items ?? [],
+          warehouses: w?.items ?? [],
+          workflows: wf?.items ?? [],
         });
       })
       .finally(() => setLoading(false));
-  }, [open]);
+  }, [open, canShipments, canReturns, canCouriers, canWarehouse, canDispatch]);
 
   React.useEffect(() => {
     if (!open) return;
@@ -494,17 +499,21 @@ function AppLayout(): JSX.Element {
 
   React.useEffect(() => {
     let alive = true;
+    const perms = authUser?.permissions ?? [];
+    const canReturns = canPerform(perms, PERMISSIONS.RETURNS_READ);
+    const canDispatch = canPerform(perms, PERMISSIONS.DISPATCH_READ);
+    const canTracking = canPerform(perms, PERMISSIONS.TRACKING_READ);
     const load = async () => {
-      const [returnsMetrics, dispatchKpis, eventsKpis] = await Promise.allSettled([
-        fetchJson<{ openExceptions?: number }>("/shipments/returns/metrics"),
-        fetchJson<{ failing?: number }>("/dispatch/kpis"),
-        fetchJson<{ totalThroughput?: number }>("/tracking/events/kpis"),
+      const [returnsMetrics, dispatchKpis, eventsKpis] = await Promise.all([
+        fetchJsonOptional<{ openExceptions?: number }>("/shipments/returns/metrics", canReturns),
+        fetchJsonOptional<{ failing?: number }>("/dispatch/kpis", canDispatch),
+        fetchJsonOptional<{ totalThroughput?: number }>("/tracking/events/kpis", canTracking),
       ]);
       if (!alive) return;
       setBadges({
-        returns: returnsMetrics.status === "fulfilled" ? (returnsMetrics.value.openExceptions ?? 0) : 0,
-        dispatch: dispatchKpis.status === "fulfilled" ? (dispatchKpis.value.failing ?? 0) : 0,
-        eventsPulse: eventsKpis.status === "fulfilled" ? (eventsKpis.value.totalThroughput ?? 0) > 0 : false,
+        returns: returnsMetrics?.openExceptions ?? 0,
+        dispatch: dispatchKpis?.failing ?? 0,
+        eventsPulse: (eventsKpis?.totalThroughput ?? 0) > 0,
       });
     };
     void load();
@@ -513,7 +522,7 @@ function AppLayout(): JSX.Element {
       alive = false;
       clearInterval(t);
     };
-  }, []);
+  }, [authUser?.permissions]);
 
   const renderBadge = (item: NavItem): JSX.Element | null => {
     const baseStyle: React.CSSProperties = {

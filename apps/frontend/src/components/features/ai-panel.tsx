@@ -73,7 +73,7 @@ export function AiPanel({
     void fetchJson<{ items?: AiMessage[] }>("/ai/assistant/history")
       .then((res) => {
         setMessages((prev) => {
-          // Defensive: never clobber a conversation the user has already started locally.
+          // Never clobber an in-flight or local conversation (history fetch can finish late).
           if (prev.length > 0) return prev;
           return res.items ?? [];
         });
@@ -133,7 +133,6 @@ export function AiPanel({
     abortRef.current = controller;
     let assistantText = "";
     let toolStatus = "";
-    let added = false;
     let tools: string[] = [];
     let grounded: string[] = [];
 
@@ -141,13 +140,14 @@ export function AiPanel({
 
     const upsertAssistant = () => {
       setMessages((m) => {
-        if (!added) {
-          added = true;
-          return [...m, { role: "assistant", text: displayText(), tools, grounded }];
+        const base: AiMessage = { role: "assistant", text: displayText(), tools, grounded };
+        const lastIdx = m.length - 1;
+        if (lastIdx >= 0 && m[lastIdx]?.role === "assistant") {
+          const next = [...m];
+          next[lastIdx] = base;
+          return next;
         }
-        const next = [...m];
-        next[next.length - 1] = { role: "assistant", text: displayText(), tools, grounded };
-        return next;
+        return [...m, base];
       });
     };
 
@@ -187,10 +187,16 @@ export function AiPanel({
             }
             toolStatus = "";
             upsertAssistant();
-          } else if (event.type === "error" && typeof event.error === "string") {
+          } else if (event.type === "error") {
+            const errText =
+              typeof event.error === "string"
+                ? event.error
+                : event.error != null
+                  ? JSON.stringify(event.error)
+                  : "unknown";
             assistantText = assistantText
-              ? `${assistantText}\n\n_(stream interrupted: ${event.error})_`
-              : `Assistant error: ${event.error}`;
+              ? `${assistantText}\n\n_(stream interrupted: ${errText})_`
+              : `Assistant error: ${errText}`;
             upsertAssistant();
           }
         },
@@ -199,15 +205,10 @@ export function AiPanel({
       .catch((err: unknown) => {
         const message = err instanceof Error ? err.message : "unknown";
         if (controller.signal.aborted) return;
-        if (!added) {
-          setMessages((m) => [
-            ...m,
-            { role: "assistant", text: `Assistant is unreachable: ${message}`, tools: [] },
-          ]);
-        } else {
-          assistantText = `${assistantText}\n\n_(stream failed: ${message})_`;
-          upsertAssistant();
-        }
+        assistantText = assistantText
+          ? `${assistantText}\n\n_(stream failed: ${message})_`
+          : `Assistant is unreachable: ${message}`;
+        upsertAssistant();
       })
       .finally(() => {
         setStreaming(false);

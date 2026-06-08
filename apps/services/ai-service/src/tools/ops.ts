@@ -1,11 +1,15 @@
 import { tool } from "ai";
 import { z } from "zod";
 
-const fetchWithTimeout = async <T>(url: string, timeoutMs = 4000): Promise<T> => {
+const fetchWithTimeout = async <T>(
+  url: string,
+  headers: Record<string, string> = {},
+  timeoutMs = 4000
+): Promise<T> => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { signal: controller.signal });
+    const res = await fetch(url, { signal: controller.signal, headers });
     if (!res.ok) throw new Error(`${url} returned ${res.status}`);
     return (await res.json()) as T;
   } finally {
@@ -56,6 +60,7 @@ type WorkflowRow = {
 
 type ExceptionRow = {
   id: string;
+  code?: string;
   shipment: string;
   kind: string;
   severity: string;
@@ -63,8 +68,23 @@ type ExceptionRow = {
   owner?: string;
 };
 
-export const buildOpsTools = (gatewayUrl: string) => {
-  const gw = (path: string) => fetchWithTimeout<{ items?: unknown[]; total?: number }>(`${gatewayUrl}${path}`);
+type ExceptionTaxonomyRow = {
+  kind: string;
+  n: number;
+  pct: number;
+  tone?: string;
+};
+
+export const buildOpsTools = (gatewayUrl: string, headers: Record<string, string> = {}) => {
+  const gw = <T>(path: string) => fetchWithTimeout<T>(`${gatewayUrl}${path}`, headers);
+
+  const safeGw = async <T>(path: string, fallback: T): Promise<T> => {
+    try {
+      return await gw<T>(path);
+    } catch (err) {
+      return { ...(fallback as object), error: err instanceof Error ? err.message : "lookup failed" } as T;
+    }
+  };
 
   return {
     getShipmentSummary: tool({
@@ -75,7 +95,10 @@ export const buildOpsTools = (gatewayUrl: string) => {
       }),
       execute: async ({ id }) => {
         try {
-          const shipment = await fetchWithTimeout<ShipmentRow>(`${gatewayUrl}/shipments/${encodeURIComponent(id)}`);
+          const shipment = await fetchWithTimeout<ShipmentRow>(
+            `${gatewayUrl}/shipments/${encodeURIComponent(id)}`,
+            headers
+          );
           return { found: true, shipment };
         } catch (err) {
           return { found: false, id, error: err instanceof Error ? err.message : "lookup failed" };
@@ -91,7 +114,7 @@ export const buildOpsTools = (gatewayUrl: string) => {
       }),
       execute: async ({ id }) => {
         try {
-          const timeline = await fetchWithTimeout<{ items?: unknown[] }>(`${gatewayUrl}/shipments/${encodeURIComponent(id)}/timeline`);
+          const timeline = await gw<{ items?: unknown[] }>(`/shipments/${encodeURIComponent(id)}/timeline`);
           return { id, items: timeline.items ?? [] };
         } catch (err) {
           return { id, items: [], error: err instanceof Error ? err.message : "lookup failed" };
@@ -103,11 +126,11 @@ export const buildOpsTools = (gatewayUrl: string) => {
       description:
         "List active shipments (not delivered/failed/returned) whose risk score is at or above the threshold, sorted highest first.",
       inputSchema: z.object({
-        limit: z.number().int().min(1).max(20).default(5),
-        minRisk: z.number().min(0).max(1).default(0.7)
+        limit: z.coerce.number().int().min(1).max(20).default(5),
+        minRisk: z.coerce.number().min(0).max(1).default(0.7)
       }),
       execute: async ({ limit, minRisk }) => {
-        const data = await gw(`/shipments?limit=500`);
+        const data = await safeGw(`/shipments?limit=500`, { items: [] as ShipmentRow[] });
         const items = ((data.items ?? []) as ShipmentRow[])
           .filter((s) => Number(s.risk ?? 0) >= minRisk && s.status !== "delivered" && s.status !== "failed" && s.status !== "returned")
           .sort((a, b) => Number(b.risk ?? 0) - Number(a.risk ?? 0))
@@ -121,7 +144,7 @@ export const buildOpsTools = (gatewayUrl: string) => {
         "Get the current load, capacity, and zone for a single courier id. Use when the user mentions a specific courier like C-4017.",
       inputSchema: z.object({ id: z.string().describe("Courier id, e.g. C-4017") }),
       execute: async ({ id }) => {
-        const data = await gw(`/couriers`);
+        const data = await safeGw(`/couriers`, { items: [] as CourierRow[] });
         const courier = ((data.items ?? []) as CourierRow[]).find((c) => c.id === id);
         if (!courier) return { found: false, id };
         return {
@@ -135,11 +158,11 @@ export const buildOpsTools = (gatewayUrl: string) => {
     findOverloadedCouriers: tool({
       description: "List couriers currently at or above the given utilization threshold, sorted by utilization.",
       inputSchema: z.object({
-        limit: z.number().int().min(1).max(20).default(5),
-        thresholdPct: z.number().min(0).max(100).default(85)
+        limit: z.coerce.number().int().min(1).max(20).default(5),
+        thresholdPct: z.coerce.number().min(0).max(100).default(85)
       }),
       execute: async ({ limit, thresholdPct }) => {
-        const data = await gw(`/couriers`);
+        const data = await safeGw(`/couriers`, { items: [] as CourierRow[] });
         const items = ((data.items ?? []) as CourierRow[])
           .filter((c) => (c.capacity ?? 0) > 0 && utilisation(c.load ?? 0, c.capacity ?? 0) * 100 >= thresholdPct)
           .sort((a, b) => utilisation(b.load ?? 0, b.capacity ?? 0) - utilisation(a.load ?? 0, a.capacity ?? 0))
@@ -154,7 +177,7 @@ export const buildOpsTools = (gatewayUrl: string) => {
         "Inspect a dispatch workflow's status, current step, retries, and error. Use when the user mentions a workflow id like TPL-disp-abc123.",
       inputSchema: z.object({ id: z.string().describe("Workflow id, e.g. TPL-disp-abc123") }),
       execute: async ({ id }) => {
-        const data = await gw(`/dispatch/workflows`);
+        const data = await safeGw(`/dispatch/workflows`, { items: [] as WorkflowRow[] });
         const workflow = ((data.items ?? []) as WorkflowRow[]).find((w) => w.id === id);
         if (!workflow) return { found: false, id };
         return { found: true, workflow };
@@ -163,19 +186,43 @@ export const buildOpsTools = (gatewayUrl: string) => {
 
     listFailedWorkflows: tool({
       description: "List currently failed dispatch workflows.",
-      inputSchema: z.object({ limit: z.number().int().min(1).max(20).default(5) }),
+      inputSchema: z.object({ limit: z.coerce.number().int().min(1).max(20).default(5) }),
       execute: async ({ limit }) => {
-        const data = await gw(`/dispatch/workflows`);
+        const data = await safeGw(`/dispatch/workflows`, { items: [] as WorkflowRow[] });
         const items = ((data.items ?? []) as WorkflowRow[]).filter((w) => w.status === "failed").slice(0, limit);
         return { count: items.length, items };
       }
     }),
 
-    listHighSeverityExceptions: tool({
-      description: "List active high-severity shipment exceptions (e.g. escalated, address unreachable, damaged).",
-      inputSchema: z.object({ limit: z.number().int().min(1).max(20).default(5) }),
+    listTodayExceptions: tool({
+      description:
+        "List and summarize today's shipment exceptions (all severities). Use when the user asks to summarize today's exceptions, open issues, or exception breakdown.",
+      inputSchema: z.object({ limit: z.coerce.number().int().min(1).max(30).default(15) }),
       execute: async ({ limit }) => {
-        const data = await gw(`/shipments/exceptions`);
+        const [exc, tax] = await Promise.all([
+          safeGw(`/shipments/exceptions`, { items: [] as ExceptionRow[] }),
+          safeGw(`/shipments/exceptions/taxonomy`, { items: [] as ExceptionTaxonomyRow[] })
+        ]);
+        const items = ((exc.items ?? []) as ExceptionRow[]).slice(0, limit);
+        const taxonomy = (tax.items ?? []) as ExceptionTaxonomyRow[];
+        const bySeverity = items.reduce<Record<string, number>>((acc, row) => {
+          acc[row.severity] = (acc[row.severity] ?? 0) + 1;
+          return acc;
+        }, {});
+        return {
+          totalToday: items.length,
+          bySeverity,
+          taxonomy: taxonomy.slice(0, 8),
+          items
+        };
+      }
+    }),
+
+    listHighSeverityExceptions: tool({
+      description: "List only high-severity shipment exceptions for today.",
+      inputSchema: z.object({ limit: z.coerce.number().int().min(1).max(20).default(5) }),
+      execute: async ({ limit }) => {
+        const data = await safeGw(`/shipments/exceptions`, { items: [] as ExceptionRow[] });
         const items = ((data.items ?? []) as ExceptionRow[]).filter((e) => e.severity === "high").slice(0, limit);
         return { count: items.length, items };
       }
@@ -185,7 +232,7 @@ export const buildOpsTools = (gatewayUrl: string) => {
       description:
         "Get the current operations KPI snapshot: counts and short trend lines for shipments, dispatched, delivered, failed, plus week-over-week deltas.",
       inputSchema: z.object({}),
-      execute: async () => fetchWithTimeout<Record<string, unknown>>(`${gatewayUrl}/analytics/kpis/overview`)
+      execute: async () => safeGw<Record<string, unknown>>(`/analytics/kpis/overview`, {})
     })
   };
 };

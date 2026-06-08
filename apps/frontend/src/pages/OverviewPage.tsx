@@ -1,31 +1,17 @@
 import React from "react";
-import { fetchJson, withRange } from "@/lib/api";
+import { fetchJsonOptional, withRange } from "@/lib/api";
 import { toNumber, formatCompact, formatDateTime, formatTime } from "@/lib/format";
 import { useCurrentUser, useTimeGreeting } from "@/hooks/useCurrentUser";
 import { useDateRange } from "@/lib/date-range";
-import { DateRangeFilter } from "@/components";
+import { canPerform, PERMISSIONS } from "@/lib/permissions";
 import {
   PageCard,
-  Icon,
   PrototypePill,
   PrototypeKpi,
-  Table,
-  Segmented,
-  StatusPill,
-  MiniStat,
   SkeletonBlock,
-  FieldRow,
-  LoadBar,
-  BarChartSeries,
-  SlaPie,
-  RmaStage,
-  LegendDot,
-  ProgressRow,
-  Sparkline,
   PageHeader,
   PageBody,
-  PageShell,
-  type PillTone,
+  DateRangeFilter,
 } from "@/components";
 import { renderThroughputBars } from "@/lib/charts";
 
@@ -40,6 +26,13 @@ export function OverviewPage(): JSX.Element {
   const [couriers, setCouriers] = React.useState<Array<Record<string, unknown>>>([]);
   const [throughput, setThroughput] = React.useState<Array<Record<string, unknown>>>([]);
   const { from, to } = useDateRange();
+  const { permissions } = useCurrentUser();
+  const canAnalytics = canPerform(permissions, PERMISSIONS.ANALYTICS_READ);
+  const canShipments = canPerform(permissions, PERMISSIONS.SHIPMENTS_READ);
+  const canTracking = canPerform(permissions, PERMISSIONS.TRACKING_READ);
+  const canDispatch = canPerform(permissions, PERMISSIONS.DISPATCH_READ);
+  const canWarehouse = canPerform(permissions, PERMISSIONS.WAREHOUSE_READ);
+  const canCouriers = canPerform(permissions, PERMISSIONS.COURIERS_READ);
 
   React.useEffect(() => {
     let alive = true;
@@ -47,23 +40,35 @@ export function OverviewPage(): JSX.Element {
     setError(null);
     const range = { from, to };
     void Promise.all([
-      fetchJson<Record<string, unknown>>(withRange("/analytics/kpis/overview", range)),
-      fetchJson<{ items?: Array<Record<string, unknown>> }>(withRange("/shipments/exceptions", range)),
-      fetchJson<{ items?: Array<Record<string, unknown>> }>(withRange("/tracking/events/recent", range)),
-      fetchJson<{ items?: Array<Record<string, unknown>> }>(withRange("/dispatch/workflows", range)),
-      fetchJson<{ items?: Array<Record<string, unknown>> }>(withRange("/warehouses", range)),
-      fetchJson<{ items?: Array<Record<string, unknown>> }>(withRange("/couriers", range)),
-      fetchJson<{ points?: Array<Record<string, unknown>> }>(withRange("/analytics/shipments/timeseries", range)),
+      fetchJsonOptional<Record<string, unknown>>(withRange("/analytics/kpis/overview", range), canAnalytics),
+      fetchJsonOptional<{ items?: Array<Record<string, unknown>> }>(
+        withRange("/shipments/exceptions", range),
+        canShipments
+      ),
+      fetchJsonOptional<{ items?: Array<Record<string, unknown>> }>(
+        withRange("/tracking/events/recent", range),
+        canTracking
+      ),
+      fetchJsonOptional<{ items?: Array<Record<string, unknown>> }>(
+        withRange("/dispatch/workflows", range),
+        canDispatch
+      ),
+      fetchJsonOptional<{ items?: Array<Record<string, unknown>> }>(withRange("/warehouses", range), canWarehouse),
+      fetchJsonOptional<{ items?: Array<Record<string, unknown>> }>(withRange("/couriers", range), canCouriers),
+      fetchJsonOptional<{ points?: Array<Record<string, unknown>> }>(
+        withRange("/analytics/shipments/timeseries", range),
+        canAnalytics
+      ),
     ])
       .then(([ov, ex, ev, wf, wh, co, ts]) => {
         if (!alive) return;
         setOverview(ov ?? {});
-        setExceptions(ex.items ?? []);
-        setEvents(ev.items ?? []);
-        setWorkflows(wf.items ?? []);
-        setWarehouses(wh.items ?? []);
-        setCouriers(co.items ?? []);
-        setThroughput(ts.points ?? []);
+        setExceptions(ex?.items ?? []);
+        setEvents(ev?.items ?? []);
+        setWorkflows(wf?.items ?? []);
+        setWarehouses(wh?.items ?? []);
+        setCouriers(co?.items ?? []);
+        setThroughput(ts?.points ?? []);
       })
       .catch((e) => {
         if (!alive) return;
@@ -75,27 +80,29 @@ export function OverviewPage(): JSX.Element {
     return () => {
       alive = false;
     };
-  }, [from, to]);
+  }, [from, to, canAnalytics, canShipments, canTracking, canDispatch, canWarehouse, canCouriers]);
 
   const { firstName } = useCurrentUser();
   const greeting = useTimeGreeting(firstName);
 
   const subtitle = React.useMemo(() => {
-    const warehouseCount = warehouses.length;
-    const regionSet = new Set(
-      warehouses
-        .map((w) => String(w.city ?? w.region ?? "").trim())
-        .filter((v) => v.length > 0)
-    );
-    const offStates = new Set(["off", "offline", "inactive", "paused"]);
-    const activeCouriers = couriers.filter((c) => !offStates.has(String(c.status ?? "").toLowerCase())).length;
-    const parts = [
-      regionSet.size > 0 ? `${regionSet.size} region${regionSet.size === 1 ? "" : "s"}` : "All regions",
-      `${warehouseCount} warehouse${warehouseCount === 1 ? "" : "s"}`,
-      `${activeCouriers} courier${activeCouriers === 1 ? "" : "s"} active`,
-    ];
-    return parts.join(" · ");
-  }, [warehouses, couriers]);
+    const parts: string[] = [];
+    if (canWarehouse) {
+      const regionSet = new Set(
+        warehouses
+          .map((w) => String(w.city ?? w.region ?? "").trim())
+          .filter((v) => v.length > 0)
+      );
+      parts.push(regionSet.size > 0 ? `${regionSet.size} region${regionSet.size === 1 ? "" : "s"}` : "All regions");
+      parts.push(`${warehouses.length} warehouse${warehouses.length === 1 ? "" : "s"}`);
+    }
+    if (canCouriers) {
+      const offStates = new Set(["off", "offline", "inactive", "paused"]);
+      const activeCouriers = couriers.filter((c) => !offStates.has(String(c.status ?? "").toLowerCase())).length;
+      parts.push(`${activeCouriers} courier${activeCouriers === 1 ? "" : "s"} active`);
+    }
+    return parts.length > 0 ? parts.join(" · ") : "Operations snapshot for your role";
+  }, [warehouses, couriers, canWarehouse, canCouriers]);
 
   if (loading) {
     return (
@@ -141,18 +148,25 @@ export function OverviewPage(): JSX.Element {
       />
       <PageBody>
         <div className="sl-grid" data-cols={6} style={{ gap: 10 }}>
+          {canAnalytics && (
+            <>
           <PrototypeKpi label="Shipments" value={formatCompact(overview.shipments)} delta={String((overview.deltas as Record<string, unknown> | undefined)?.shipments ?? "")} />
           <PrototypeKpi label="Dispatched" value={formatCompact(overview.dispatched)} delta={String((overview.deltas as Record<string, unknown> | undefined)?.dispatched ?? "")} />
           <PrototypeKpi label="Delivered" value={formatCompact(overview.delivered)} tone="ok" delta={String((overview.deltas as Record<string, unknown> | undefined)?.delivered ?? "")} />
           <PrototypeKpi label="Failed" value={formatCompact(overview.failed)} tone="err" delta={String((overview.deltas as Record<string, unknown> | undefined)?.failed ?? "")} />
           <PrototypeKpi label="Avg delivery" value={`${toNumber(overview.avgDeliveryTime)}m`} tone="info" />
           <PrototypeKpi label="Return rate" value={`${toNumber(overview.returnRate)}%`} />
+            </>
+          )}
         </div>
 
         <div className="sl-grid" data-cols={12} style={{ gap: 12 }}>
+          {canAnalytics && (
           <PageCard title="Hourly throughput">
             {renderThroughputBars(throughput)}
           </PageCard>
+          )}
+          {canShipments && (
           <PageCard title="Active exceptions">
             <div style={{ display: "grid", gap: 8 }}>
               {exceptions.slice(0, 5).map((row, i) => {
@@ -176,9 +190,11 @@ export function OverviewPage(): JSX.Element {
               })}
             </div>
           </PageCard>
+          )}
         </div>
 
         <div className="sl-grid" data-cols={12} style={{ gap: 12 }}>
+          {canTracking && (
           <PageCard title="Live event stream">
             <div style={{ maxHeight: 270, overflow: "auto", display: "grid", gap: 0 }}>
               {events.slice(0, 12).map((row, i) => {
@@ -199,6 +215,8 @@ export function OverviewPage(): JSX.Element {
               })}
             </div>
           </PageCard>
+          )}
+          {canDispatch && (
           <PageCard title="Active workflows">
             <div style={{ maxHeight: 270, overflow: "auto", display: "grid", gap: 8 }}>
               {workflows.slice(0, 7).map((row, i) => {
@@ -219,9 +237,12 @@ export function OverviewPage(): JSX.Element {
               })}
             </div>
           </PageCard>
+          )}
         </div>
 
+        {(canWarehouse || canCouriers) && (
         <div className="sl-grid" data-cols={12} style={{ gap: 12 }}>
+          {canWarehouse && (
           <PageCard title="Warehouse utilization">
             <div style={{ display: "grid", gap: 10 }}>
               {warehouses.slice(0, 6).map((row, i) => {
@@ -244,6 +265,8 @@ export function OverviewPage(): JSX.Element {
               })}
             </div>
           </PageCard>
+          )}
+          {canCouriers && (
           <PageCard title="Courier roster">
             <div style={{ display: "grid", gap: 7 }}>
               {couriers.slice(0, 7).map((row, i) => (
@@ -291,7 +314,9 @@ export function OverviewPage(): JSX.Element {
               ))}
             </div>
           </PageCard>
+          )}
         </div>
+        )}
       </PageBody>
     </>
   );

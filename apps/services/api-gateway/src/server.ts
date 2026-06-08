@@ -21,7 +21,7 @@ import {
   bearerFromHeader,
   verifyAccessToken
 } from "@smartlogistics/shared-middleware";
-import { isAuthorized, isPublic } from "./authz.js";
+import { isAuthorized, isPublic, isWriteMethod } from "./authz.js";
 
 // Carry the verified identity from the auth hook to the proxy header rewrite.
 declare module "fastify" {
@@ -76,6 +76,8 @@ await app.register(rateLimit, {
 await app.register(cors, { origin: true, credentials: true });
 app.addHook("onRequest", attachRequestId);
 
+const INTERNAL_SERVICE_SECRET = process.env.INTERNAL_SERVICE_SECRET?.trim() ?? "";
+
 // Centralized authN + authZ for every proxied request. Permissions are resolved
 // at login and carried in the JWT; the gateway checks them against the path and
 // HTTP method — no hardcoded admin role id or policy cache.
@@ -83,6 +85,18 @@ app.addHook("onRequest", async (request, reply) => {
   if (request.method === "OPTIONS") return; // CORS preflight
   const pathname = request.url.split("?")[0];
   if (isPublic(pathname)) return;
+
+  // ai-service and other internal callers use a shared secret for read-only ops snapshots.
+  const internalSecret = request.headers["x-internal-service-secret"];
+  if (INTERNAL_SERVICE_SECRET && internalSecret === INTERNAL_SERVICE_SECRET) {
+    if (isWriteMethod(request.method)) {
+      reply.code(403).send({ error: "Forbidden", message: "Internal service may not perform write requests" });
+      return reply;
+    }
+    request.authUserId = "internal:service";
+    request.authUserRole = "internal";
+    return;
+  }
 
   const token = bearerFromHeader(request.headers.authorization);
   if (!token) {
