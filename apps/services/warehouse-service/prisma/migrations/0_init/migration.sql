@@ -3,7 +3,8 @@ CREATE SCHEMA IF NOT EXISTS "public";
 
 -- CreateTable
 CREATE TABLE "warehouse_records" (
-    "id" TEXT NOT NULL,
+    "id" UUID NOT NULL,
+    "code" TEXT NOT NULL,
     "city" TEXT NOT NULL,
     "name" TEXT NOT NULL,
     "util" DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -19,8 +20,8 @@ CREATE TABLE "warehouse_records" (
 
 -- CreateTable
 CREATE TABLE "warehouse_lane_occupancy" (
-    "id" TEXT NOT NULL,
-    "warehouse_id" TEXT NOT NULL,
+    "id" UUID NOT NULL,
+    "warehouse_id" UUID NOT NULL,
     "lane_index" INTEGER NOT NULL,
     "occupancy_pct" INTEGER NOT NULL,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -30,8 +31,8 @@ CREATE TABLE "warehouse_lane_occupancy" (
 
 -- CreateTable
 CREATE TABLE "warehouse_stock_items" (
-    "id" TEXT NOT NULL,
-    "warehouse_id" TEXT NOT NULL,
+    "id" UUID NOT NULL,
+    "warehouse_id" UUID NOT NULL,
     "sku" TEXT NOT NULL,
     "name" TEXT NOT NULL,
     "on_hand" INTEGER NOT NULL DEFAULT 0,
@@ -42,4 +43,7 @@ CREATE TABLE "warehouse_stock_items" (
 
     CONSTRAINT "warehouse_stock_items_pkey" PRIMARY KEY ("id")
 );
+
+-- CreateIndex
+CREATE UNIQUE INDEX "warehouse_records_code_key" ON "warehouse_records"("code");
 

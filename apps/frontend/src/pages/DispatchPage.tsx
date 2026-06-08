@@ -1,5 +1,6 @@
 import React from "react";
 import { fetchJson, postJson, withRange } from "@/lib/api";
+import { canPerform, PERMISSIONS } from "@/lib/permissions";
 import { toNumber, formatCompact, formatDateTime } from "@/lib/format";
 import { DISPATCH_STEPS } from "@/lib/constants";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
@@ -46,7 +47,8 @@ export type DispatchKpis = { running?: number; failing?: number; completed?: num
 export type DispatchFilter = "all" | "running" | "failing" | "completed";
 
 export function DispatchPage(): JSX.Element {
-  const { user } = useCurrentUser();
+  const { user, permissions } = useCurrentUser();
+  const canWriteDispatch = canPerform(permissions, PERMISSIONS.DISPATCH_WRITE);
   const actor = user?.email ? `ops:${user.email.split("@")[0]}` : "ops:console";
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
@@ -258,7 +260,7 @@ export function DispatchPage(): JSX.Element {
               rows={filtered}
               emptyText="No workflows match this filter."
               columns={[
-                { key: "id", label: "Workflow", mono: true, render: (r) => <span style={{ color: "var(--info)" }}>{r.id}</span> },
+                { key: "code", label: "Workflow", mono: true, render: (r) => <span style={{ color: "var(--info)" }}>{String(r.code ?? r.id)}</span> },
                 { key: "type", label: "Type", render: (r) => <span style={{ color: "var(--ink-2)" }}>{String(r.type ?? "")}</span> },
                 { key: "shipment", label: "Shipment", mono: true },
                 {
@@ -290,10 +292,11 @@ export function DispatchPage(): JSX.Element {
             />
           </PageCard>
 
-          <PageCard title="Run inspector" sub={selected.id} style={{ gridColumn: "span 5" }} padding={14}>
+          <PageCard title="Run inspector" sub={String(selected.code ?? selected.id)} style={{ gridColumn: "span 5" }} padding={14}>
             <DispatchRunInspector
               workflow={selected}
               actor={actor}
+              canWrite={canWriteDispatch}
               onWorkflowUpdated={applyWorkflowUpdate}
               onRefresh={softRefresh}
             />
@@ -342,11 +345,13 @@ const INSPECTOR_LABELS: Record<InspectorAction, { idle: string; pending: string;
 export function DispatchRunInspector({
   workflow,
   actor,
+  canWrite,
   onWorkflowUpdated,
   onRefresh,
 }: {
   workflow: WorkflowRow;
   actor: string;
+  canWrite: boolean;
   onWorkflowUpdated: (updated: WorkflowRow) => void;
   onRefresh: () => Promise<void> | void;
 }): JSX.Element {
@@ -416,7 +421,7 @@ export function DispatchRunInspector({
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12, gap: 10 }}>
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 12.5, color: "var(--ink)" }}>
-            <span className="mono" style={{ color: "var(--info)" }}>{workflow.id}</span>
+            <span className="mono" style={{ color: "var(--info)" }}>{String(workflow.code ?? workflow.id)}</span>
           </div>
           <div style={{ fontSize: 11, color: "var(--mute)" }}>
             {String(workflow.type ?? "")} · {String(workflow.shipment ?? "")} · started {formatDateTime(workflow.started)}
@@ -492,44 +497,46 @@ export function DispatchRunInspector({
         })}
       </div>
 
-      <div style={{ display: "flex", gap: 6, marginTop: 14, flexWrap: "wrap", alignItems: "center" }}>
-        <button
-          type="button"
-          className={defaultBtn}
-          onClick={() => runAction("replay")}
-          disabled={replayDisabled}
-          title={isTerminated ? "Terminated workflows cannot be replayed" : "Restart from current step"}
-        >
-          {pending === "replay" ? INSPECTOR_LABELS.replay.pending : INSPECTOR_LABELS.replay.idle}
-        </button>
-        <button
-          type="button"
-          className={defaultBtn}
-          onClick={() => runAction("skip")}
-          disabled={skipDisabled}
-          title={
-            isTerminal
-              ? `Workflow is ${status}; cannot skip`
-              : isLastActiveStep
-                ? "Skips final step and marks workflow completed"
-                : "Advance to the next step"
-          }
-        >
-          {pending === "skip" ? INSPECTOR_LABELS.skip.pending : INSPECTOR_LABELS.skip.idle}
-        </button>
-        <button
-          type="button"
-          className={dangerBtn}
-          onClick={() => runAction("terminate")}
-          disabled={terminateDisabled}
-          title={isTerminal ? `Workflow is already ${status}` : "Terminate this workflow"}
-        >
-          {pending === "terminate" ? INSPECTOR_LABELS.terminate.pending : INSPECTOR_LABELS.terminate.idle}
-        </button>
-        <span style={{ marginLeft: "auto", fontSize: 10.5, color: "var(--mute)" }}>
-          Idempotency key: <span className="mono">{idempotencyKey}</span>
-        </span>
-      </div>
+      {canWrite && (
+        <div style={{ display: "flex", gap: 6, marginTop: 14, flexWrap: "wrap", alignItems: "center" }}>
+          <button
+            type="button"
+            className={defaultBtn}
+            onClick={() => runAction("replay")}
+            disabled={replayDisabled}
+            title={isTerminated ? "Terminated workflows cannot be replayed" : "Restart from current step"}
+          >
+            {pending === "replay" ? INSPECTOR_LABELS.replay.pending : INSPECTOR_LABELS.replay.idle}
+          </button>
+          <button
+            type="button"
+            className={defaultBtn}
+            onClick={() => runAction("skip")}
+            disabled={skipDisabled}
+            title={
+              isTerminal
+                ? `Workflow is ${status}; cannot skip`
+                : isLastActiveStep
+                  ? "Skips final step and marks workflow completed"
+                  : "Advance to the next step"
+            }
+          >
+            {pending === "skip" ? INSPECTOR_LABELS.skip.pending : INSPECTOR_LABELS.skip.idle}
+          </button>
+          <button
+            type="button"
+            className={dangerBtn}
+            onClick={() => runAction("terminate")}
+            disabled={terminateDisabled}
+            title={isTerminal ? `Workflow is already ${status}` : "Terminate this workflow"}
+          >
+            {pending === "terminate" ? INSPECTOR_LABELS.terminate.pending : INSPECTOR_LABELS.terminate.idle}
+          </button>
+          <span style={{ marginLeft: "auto", fontSize: 10.5, color: "var(--mute)" }}>
+            Idempotency key: <span className="mono">{idempotencyKey}</span>
+          </span>
+        </div>
+      )}
       {notice && (
         <div
           className={`mt-3 px-3 py-2 rounded-md text-xs ${

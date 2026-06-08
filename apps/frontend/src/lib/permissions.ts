@@ -1,13 +1,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Role-based access control (RBAC) — data-driven
 //
-// Page access is no longer hardcoded in the frontend. The backend (user-service
-// `roles.pages`, surfaced on the authenticated user as `user.pages`) is the
-// single source of truth for which pages a role can see/reach. These helpers
-// only sanitize that list and map between routes and page ids.
-//
-// Page ids match the sidebar NAV item ids in router.tsx.
+// Page access comes from the backend (`roles.pages` → `user.pages`).
+// Action access comes from granular permissions (`roles.permissions` →
+// `user.permissions`), e.g. "shipments:write" to escalate a shipment.
 // ─────────────────────────────────────────────────────────────────────────────
+
+import { hasPermission, type Permission } from "@smartlogistics/shared-types";
+
+export { PERMISSIONS, type Permission } from "@smartlogistics/shared-types";
 
 export const ALL_PAGES = [
   "overview",
@@ -78,4 +79,12 @@ export function pageIdForPath(pathname: string): PageId | null {
 export function defaultRouteForUser(pages?: string[] | null): string {
   const first = pagesForUser(pages)[0] ?? "overview";
   return PAGE_TO_PATH[first] ?? "/overview";
+}
+
+/** True when the user holds a granular portal/API permission from their role. */
+export function canPerform(
+  permissions: readonly string[] | null | undefined,
+  required: Permission
+): boolean {
+  return hasPermission(permissions, required);
 }

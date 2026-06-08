@@ -1,8 +1,7 @@
 import Fastify from "fastify";
 import { buildLogger, setupMetrics, parseRange } from "@smartlogistics/shared-middleware";
-import { startDispatchWorkflow } from "./temporal/client.js";
-import { startDispatchWorker } from "./temporal/worker.js";
-import * as dispatchActivities from "./temporal/activities/dispatch.activities.js";
+import { workflowCode } from "@smartlogistics/shared-types";
+import { startDispatchWorkflow } from "./temporal-client.js";
 import { prisma } from "./db.js";
 
 const app = Fastify({ logger: buildLogger("dispatch-service") });
@@ -24,8 +23,10 @@ const TERMINAL_STATUSES = new Set(["completed", "terminated"]);
 
 const WORKFLOW_SELECT = {
   id: true,
+  code: true,
   type: true,
-  shipment: true,
+  shipmentId: true,
+  shipmentTracking: true,
   started: true,
   duration: true,
   status: true,
@@ -36,8 +37,10 @@ const WORKFLOW_SELECT = {
 
 type WorkflowRow = {
   id: string;
+  code: string;
   type: string;
-  shipment: string;
+  shipmentId: string;
+  shipmentTracking: string;
   started: string;
   duration: string;
   status: string;
@@ -45,6 +48,20 @@ type WorkflowRow = {
   retries: number;
   error: string | null;
 };
+
+const workflowDto = (w: WorkflowRow) => ({
+  id: w.id,
+  code: w.code,
+  type: w.type,
+  shipment: w.shipmentTracking,
+  shipment_id: w.shipmentId,
+  started: w.started,
+  duration: w.duration,
+  status: w.status,
+  step: w.step,
+  retries: w.retries,
+  error: w.error
+});
 
 const getWorkflow = async (id: string): Promise<WorkflowRow | null> => {
   return prisma.dispatchWorkflow.findUnique({ where: { id }, select: WORKFLOW_SELECT });
@@ -106,7 +123,7 @@ app.get("/workflows", async (request) => {
     orderBy: { createdAt: "desc" },
     take: 200
   });
-  return { items };
+  return { items: items.map(workflowDto) };
 });
 app.get("/failure-modes", async () => {
   const rows = await prisma.dispatchFailureMode.findMany({
@@ -133,20 +150,19 @@ app.get("/kpis", async (request) => {
   return { running, failing, completed, avgDurationSeconds };
 });
 
-// Run the dispatch activity sequence in-process. Used as a graceful fallback
-// when Temporal is unreachable so the dispatch flow still completes locally.
-const runDispatchInline = async (shipmentId: string): Promise<void> => {
-  await dispatchActivities.validateShipment(shipmentId);
-  await dispatchActivities.reserveInventory(shipmentId);
-  await dispatchActivities.generateShippingLabel(shipmentId);
-  await dispatchActivities.assignCourier(shipmentId);
-  await dispatchActivities.initializeTracking(shipmentId);
-  await dispatchActivities.markDispatched(shipmentId);
-};
-
-app.post("/:shipmentId/trigger", async (request) => {
+app.post("/:shipmentId/trigger", async (request, reply) => {
   const { shipmentId } = request.params as { shipmentId: string };
-  const workflowId = `dispatch-${shipmentId}`;
+  const raw = (request.body ?? {}) as { shipmentTracking?: unknown };
+  const shipmentTracking =
+    typeof raw.shipmentTracking === "string" && raw.shipmentTracking.trim().length > 0
+      ? raw.shipmentTracking.trim()
+      : undefined;
+  const existing = await prisma.dispatchWorkflow.findFirst({
+    where: { shipmentId },
+    select: { id: true, code: true }
+  });
+  const workflowId = existing?.id ?? crypto.randomUUID();
+  const code = existing?.code ?? workflowCode("DispatchWorkflow");
 
   // Record the durable workflow row up front so it's visible immediately.
   const startedAt = new Date().toISOString();
@@ -154,8 +170,10 @@ app.post("/:shipmentId/trigger", async (request) => {
     where: { id: workflowId },
     create: {
       id: workflowId,
+      code,
       type: "DispatchWorkflow",
-      shipment: shipmentId,
+      shipmentId,
+      shipmentTracking: shipmentTracking ?? "—",
       started: startedAt,
       duration: "-",
       status: "running",
@@ -166,24 +184,24 @@ app.post("/:shipmentId/trigger", async (request) => {
     update: { status: "running", step: "assign_courier", error: null, started: startedAt }
   });
 
-  // Preferred path: hand the orchestration to Temporal (durable, retryable,
-  // observable). If Temporal can't be reached, degrade to inline execution.
-  let orchestrator = "temporal";
   try {
-    await startDispatchWorkflow(shipmentId);
+    await startDispatchWorkflow({ workflowId, shipmentId, shipmentTracking });
   } catch (err) {
-    app.log.warn({ err: (err as Error).message, shipmentId }, "temporal unavailable; running dispatch inline");
-    orchestrator = "inline";
-    await runDispatchInline(shipmentId);
+    app.log.warn({ err: (err as Error).message, shipmentId }, "temporal unavailable");
+    return reply.status(503).send({
+      ok: false,
+      error: "temporal_unavailable",
+      message: "Dispatch orchestration requires Temporal; worker service may be down."
+    });
   }
 
-  return { ok: true, workflowId, orchestrator };
+  return { ok: true, workflowId, orchestrator: "temporal" };
 });
 
 app.get("/:shipmentId/status", async (request) => {
   const { shipmentId } = request.params as { shipmentId: string };
   const row = await prisma.dispatchWorkflow.findFirst({
-    where: { shipment: shipmentId },
+    where: { shipmentId },
     orderBy: { createdAt: "desc" },
     select: { status: true }
   });
@@ -341,13 +359,5 @@ app.post("/:workflowId/terminate", async (request, reply) => {
 app.post("/delivery/:shipmentId/trigger", async () => ({ ok: true }));
 
 const port = Number(process.env.DISPATCH_SERVICE_PORT ?? 4005);
-
-// Best-effort: run the Temporal worker alongside the API. If Temporal isn't
-// reachable the API still serves and dispatch falls back to inline execution.
-if (process.env.DISPATCH_WORKER_INPROCESS !== "false") {
-  void startDispatchWorker().catch((err) =>
-    app.log.warn({ err: (err as Error).message }, "dispatch Temporal worker not started")
-  );
-}
 
 await app.listen({ port, host: "0.0.0.0" });

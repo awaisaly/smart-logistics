@@ -1,50 +1,59 @@
 import Fastify from "fastify";
 import { z } from "zod";
 import { buildLogger, setupMetrics, parseRange } from "@smartlogistics/shared-middleware";
-import { shipmentStatusSchema } from "@smartlogistics/shared-types";
+import { exceptionCode, shipmentStatusSchema, trackingNumber } from "@smartlogistics/shared-types";
 import { prisma } from "./db.js";
 
 const app = Fastify({ logger: buildLogger("shipment-service") });
 setupMetrics(app, "shipment-service");
 
-// Shapes the internal (camelCase) Prisma row into the snake_cased JSON the
-// frontend has always consumed (notably `transit_minutes`).
+const UNASSIGNED_ID = "00000000-0000-0000-0000-000000000000";
+
 type ShipmentRow = {
   id: string;
-  from: string;
-  to: string;
+  trackingNumber: string;
+  fromCode: string;
+  toCode: string;
+  courierId: string;
+  courierCode: string;
   weight: string;
   status: string;
   priority: string;
-  courier: string;
   placed: string;
   eta: string;
   risk: number;
   items: number;
   transitMinutes: number;
 };
+
 const SHIPMENT_SELECT = {
   id: true,
-  from: true,
-  to: true,
+  trackingNumber: true,
+  fromCode: true,
+  toCode: true,
+  courierId: true,
+  courierCode: true,
   weight: true,
   status: true,
   priority: true,
-  courier: true,
   placed: true,
   eta: true,
   risk: true,
   items: true,
   transitMinutes: true
 } as const;
+
+/** Portal-facing JSON: human-readable codes in legacy `from`/`to`/`courier` fields. */
 const shipmentDto = (r: ShipmentRow) => ({
   id: r.id,
-  from: r.from,
-  to: r.to,
+  tracking_number: r.trackingNumber,
+  from: r.fromCode,
+  to: r.toCode,
+  courier: r.courierCode,
+  courier_id: r.courierId,
   weight: r.weight,
   status: r.status,
   priority: r.priority,
-  courier: r.courier,
   placed: r.placed,
   eta: r.eta,
   risk: r.risk,
@@ -61,22 +70,26 @@ app.get("/health", async () => ({ ok: true, service: "shipment-service" }));
 
 app.post("/", async (request) => {
   const payload = createShipmentSchema.parse(request.body);
-  const id = `SL-${Math.floor(1000000 + Math.random() * 9000000)}`;
-  const created = {
+  const id = crypto.randomUUID();
+  const row = {
     id,
-    from: "KHI-W1",
-    to: payload.reference,
+    trackingNumber: trackingNumber(),
+    fromWarehouseId: UNASSIGNED_ID,
+    toWarehouseId: UNASSIGNED_ID,
+    fromCode: "ORIGIN",
+    toCode: payload.reference,
+    courierId: UNASSIGNED_ID,
+    courierCode: "-",
     weight: "1.0kg",
     status: "created",
     priority: payload.priority,
-    courier: "-",
     placed: "now",
     eta: "tomorrow",
     risk: 0.1,
     items: 1,
     transitMinutes: 0
   };
-  await prisma.shipmentRecord.create({ data: created });
+  await prisma.shipmentRecord.create({ data: row });
   await prisma.shipmentAudit.create({
     data: {
       id: crypto.randomUUID(),
@@ -87,7 +100,7 @@ app.post("/", async (request) => {
       reason: "POST /shipments"
     }
   });
-  return created;
+  return shipmentDto(row);
 });
 
 app.get("/", async (request) => {
@@ -106,26 +119,59 @@ app.get("/", async (request) => {
   });
   return { items: rows.map(shipmentDto), total, page: Math.floor(offset / limit) + 1, limit };
 });
+
 app.get("/returns", async (request) => {
   const { from, to } = parseRange(request.query as { from?: string; to?: string });
   const items = await prisma.shipmentReturn.findMany({
     where: { createdAt: { gte: new Date(from), lte: new Date(to) } },
-    select: { id: true, shipment: true, reason: true, initiated: true, stage: true, customer: true, refund: true },
+    select: {
+      id: true,
+      code: true,
+      shipmentTracking: true,
+      reason: true,
+      initiated: true,
+      stage: true,
+      customer: true,
+      refund: true
+    },
     orderBy: { createdAt: "desc" },
     take: 200
   });
-  return { items };
+  return {
+    items: items.map((r) => ({
+      id: r.id,
+      code: r.code,
+      shipment: r.shipmentTracking,
+      reason: r.reason,
+      initiated: r.initiated,
+      stage: r.stage,
+      customer: r.customer,
+      refund: r.refund
+    }))
+  };
 });
+
 app.get("/exceptions", async (request) => {
   const { from, to } = parseRange(request.query as { from?: string; to?: string });
   const rows = await prisma.shipmentException.findMany({
     where: { createdAt: { gte: new Date(from), lte: new Date(to) } },
-    select: { id: true, shipment: true, kind: true, severity: true, age: true, ownerName: true },
+    select: { id: true, code: true, shipmentTracking: true, kind: true, severity: true, age: true, ownerName: true },
     orderBy: { createdAt: "desc" },
     take: 200
   });
-  return { items: rows.map((r) => ({ id: r.id, shipment: r.shipment, kind: r.kind, severity: r.severity, age: r.age, owner: r.ownerName })) };
+  return {
+    items: rows.map((r) => ({
+      id: r.id,
+      code: r.code,
+      shipment: r.shipmentTracking,
+      kind: r.kind,
+      severity: r.severity,
+      age: r.age,
+      owner: r.ownerName
+    }))
+  };
 });
+
 app.get("/returns/metrics", async (request) => {
   const { from, to } = parseRange(request.query as { from?: string; to?: string });
   const range = { createdAt: { gte: new Date(from), lte: new Date(to) } };
@@ -136,6 +182,7 @@ app.get("/returns/metrics", async (request) => {
     returnRatePct: 3.4
   };
 });
+
 app.get("/exceptions/taxonomy", async (request) => {
   const { from, to } = parseRange(request.query as { from?: string; to?: string });
   const range = { createdAt: { gte: new Date(from), lte: new Date(to) } };
@@ -160,11 +207,13 @@ app.get("/exceptions/taxonomy", async (request) => {
     })
   };
 });
+
 app.get("/:id", async (request) => {
   const { id } = request.params as { id: string };
   const shipment = await prisma.shipmentRecord.findUnique({ where: { id }, select: SHIPMENT_SELECT });
   return { ...(shipment ? shipmentDto(shipment) : { id }), history: [] };
 });
+
 app.get("/:id/timeline", async (request) => {
   const { id } = request.params as { id: string };
   const rows = await prisma.shipmentTimeline.findMany({
@@ -174,6 +223,7 @@ app.get("/:id/timeline", async (request) => {
   });
   return { items: rows.map((r) => ({ t: r.t, label: r.label, desc: r.descr, done: r.done, active: r.active })) };
 });
+
 app.get("/:id/audit", async (request) => {
   const { id } = request.params as { id: string };
   const items = await prisma.shipmentAudit.findMany({
@@ -186,7 +236,7 @@ app.get("/:id/audit", async (request) => {
 
 const actorSchema = z.object({
   actor: z.string().default("ops:console"),
-  reason: z.string().optional(),
+  reason: z.string().optional()
 });
 
 async function appendAudit(shipmentId: string, actor: string, action: string, reason: string): Promise<void> {
@@ -195,13 +245,8 @@ async function appendAudit(shipmentId: string, actor: string, action: string, re
   });
 }
 
-// Canonical lifecycle steps. Kept identical to the seed (scripts/seed.ts) so that
-// runtime-advanced timelines and seeded timelines render the same way.
 const LIFECYCLE_STEPS = ["Created", "Picked up", "In transit", "Out for delivery", "Delivered"] as const;
 
-// Maps a shipment status to "how many steps are complete". The step at this index
-// becomes the active (pulsing) node; everything before it is done. Mirrors the seed
-// mapping so the timeline never contradicts the status pill.
 function doneIdxForStatus(status: string): number {
   const s = String(status ?? "").toLowerCase();
   if (s === "delivered") return LIFECYCLE_STEPS.length;
@@ -215,8 +260,6 @@ function doneIdxForStatus(status: string): number {
   return 1;
 }
 
-// Guarantees a shipment has the 5 canonical lifecycle rows (e.g. shipments created
-// via POST / have none until now).
 async function ensureTimeline(shipmentId: string): Promise<void> {
   const count = await prisma.shipmentTimeline.count({ where: { shipmentId } });
   if (count > 0) return;
@@ -234,9 +277,6 @@ async function ensureTimeline(shipmentId: string): Promise<void> {
   });
 }
 
-// Recomputes done/active flags for the canonical timeline steps from the shipment's
-// current status, so the Lifecycle timeline stays in sync with actions/escalations.
-// Optionally stamps the freshly-reached step with a new timestamp + description.
 async function syncTimelineToStatus(shipmentId: string, status: string, descrOverride?: string): Promise<void> {
   await ensureTimeline(shipmentId);
   const rows = await prisma.shipmentTimeline.findMany({
@@ -276,14 +316,25 @@ app.post("/:id/escalate", async (request) => {
   await appendAudit(id, body.actor, "exception_escalated", reason);
 
   const existing = await prisma.shipmentException.findFirst({
-    where: { shipment: id, kind: "escalated" },
-    select: { id: true }
+    where: { shipmentId: id, kind: "escalated" },
+    select: { id: true, code: true }
   });
   let exceptionId = existing?.id;
+  let exceptionCodeOut = existing?.code;
   if (!exceptionId) {
-    exceptionId = `EX-${id.replace(/\W/g, "").slice(-6)}-${Math.floor(Math.random() * 900 + 100)}`;
+    exceptionId = crypto.randomUUID();
+    exceptionCodeOut = exceptionCode();
     await prisma.shipmentException.create({
-      data: { id: exceptionId, shipment: id, kind: "escalated", severity: "high", age: "just now", ownerName: body.actor }
+      data: {
+        id: exceptionId,
+        code: exceptionCodeOut,
+        shipmentId: id,
+        shipmentTracking: shipment.trackingNumber,
+        kind: "escalated",
+        severity: "high",
+        age: "just now",
+        ownerName: body.actor
+      }
     });
   }
 
@@ -299,13 +350,13 @@ app.post("/:id/escalate", async (request) => {
     orderBy: { createdAt: "desc" },
     take: 20
   });
-  return { ok: true, shipment: updated ? shipmentDto(updated) : null, exceptionId, audit: auditRows };
+  return { ok: true, shipment: updated ? shipmentDto(updated) : null, exceptionId: exceptionCodeOut, audit: auditRows };
 });
 
 const shipmentActionSchema = z.object({
   action: z.enum(["mark_delivered", "schedule_reattempt", "reassign_courier", "initiate_return", "cancel_shipment"]),
   actor: z.string().default("ops:console"),
-  reason: z.string().optional(),
+  reason: z.string().optional()
 });
 
 app.post("/:id/actions", async (request) => {
@@ -329,10 +380,13 @@ app.post("/:id/actions", async (request) => {
       auditReason = body.reason ?? "Reattempt scheduled for 19:30";
       break;
     case "reassign_courier": {
-      const courier = `C-${Math.floor(1000 + Math.random() * 9000)}`;
-      await prisma.shipmentRecord.update({ where: { id }, data: { courier } });
+      const nextCode = `C-${Math.floor(1000 + Math.random() * 9000)}`;
+      await prisma.shipmentRecord.update({
+        where: { id },
+        data: { courierId: UNASSIGNED_ID, courierCode: nextCode }
+      });
       auditAction = "courier_assigned";
-      auditReason = body.reason ?? `Reassigned to ${courier}`;
+      auditReason = body.reason ?? `Reassigned to ${nextCode}`;
       break;
     }
     case "initiate_return":
@@ -341,7 +395,10 @@ app.post("/:id/actions", async (request) => {
       auditReason = body.reason ?? "Return initiated from actions menu";
       break;
     case "cancel_shipment":
-      await prisma.shipmentRecord.update({ where: { id }, data: { status: "failed", courier: "-" } });
+      await prisma.shipmentRecord.update({
+        where: { id },
+        data: { status: "failed", courierId: UNASSIGNED_ID, courierCode: "-" }
+      });
       auditAction = "shipment_cancelled";
       auditReason = body.reason ?? "Cancelled from actions menu";
       break;
@@ -350,8 +407,6 @@ app.post("/:id/actions", async (request) => {
   await appendAudit(id, actor, auditAction, auditReason);
 
   const updated = await getShipmentRow(id);
-  // Advance the lifecycle timeline so it never contradicts the new status. We only
-  // re-sync when the status actually moved (reassign_courier leaves status untouched).
   if (String(updated?.status ?? "") !== String(shipment.status ?? "")) {
     await syncTimelineToStatus(id, String(updated?.status ?? shipment.status), auditReason);
   }

@@ -3,7 +3,6 @@ export * from "./http/request-id.js";
 export * from "./http/rate-limit.js";
 export * from "./auth/jwt.js";
 export * from "./auth/password.js";
-export * from "./auth/roles.js";
 export * from "./idempotency/redis-idempotency.js";
 export * from "./otel/instrumentation.js";
 export * from "./metrics/prometheus.js";

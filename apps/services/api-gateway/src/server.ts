@@ -2,7 +2,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Load the workspace-root .env so JWT_ACCESS_SECRET is available when running
-// under `tsx` without the var exported in the shell.
+// under `tsx` without the vars exported in the shell.
 try {
   process.loadEnvFile(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../.env"));
 } catch {
@@ -19,10 +19,9 @@ import {
   buildLogger,
   setupMetrics,
   bearerFromHeader,
-  verifyAccessToken,
-  ROLE_DEFS
+  verifyAccessToken
 } from "@smartlogistics/shared-middleware";
-import { buildPolicy, isAuthorized, isPublic, type RolePolicy } from "./authz.js";
+import { isAuthorized, isPublic } from "./authz.js";
 
 // Carry the verified identity from the auth hook to the proxy header rewrite.
 declare module "fastify" {
@@ -45,26 +44,6 @@ const upstream = {
   analytics: process.env.ANALYTICS_SERVICE_UPSTREAM ?? "http://localhost:4008",
   ai: process.env.AI_SERVICE_UPSTREAM ?? "http://localhost:4009"
 };
-
-// ── RBAC policy cache (role key → allowed gateway path prefixes) ─────────────
-// Seeded from the canonical ROLE_DEFS (always available as a fallback) and kept
-// in sync with the user-service's GET /roles so role edits propagate without a
-// gateway redeploy.
-let policy: RolePolicy = buildPolicy(ROLE_DEFS);
-
-async function refreshPolicy(): Promise<void> {
-  try {
-    const res = await fetch(`${upstream.user}/roles`);
-    if (!res.ok) throw new Error(`status ${res.status}`);
-    const body = (await res.json()) as { items?: Array<{ key: string; apiPrefixes: string[] }> };
-    if (body.items?.length) {
-      policy = buildPolicy(body.items);
-      app.log.info({ roles: body.items.length }, "rbac policy refreshed from user-service");
-    }
-  } catch (err) {
-    app.log.warn({ err: (err as Error).message }, "rbac policy refresh failed; using cached/fallback policy");
-  }
-}
 
 // Replace any client-supplied identity headers with the verified identity so a
 // downstream service can trust x-user-id / x-user-role (defense in depth).
@@ -97,7 +76,9 @@ await app.register(rateLimit, {
 await app.register(cors, { origin: true, credentials: true });
 app.addHook("onRequest", attachRequestId);
 
-// Centralized authN + authZ for every proxied request.
+// Centralized authN + authZ for every proxied request. Permissions are resolved
+// at login and carried in the JWT; the gateway checks them against the path and
+// HTTP method — no hardcoded admin role id or policy cache.
 app.addHook("onRequest", async (request, reply) => {
   if (request.method === "OPTIONS") return; // CORS preflight
   const pathname = request.url.split("?")[0];
@@ -109,16 +90,18 @@ app.addHook("onRequest", async (request, reply) => {
     return reply;
   }
   let role: string;
+  let permissions: string[];
   try {
     const claims = verifyAccessToken(token);
     request.authUserId = claims.sub;
     request.authUserRole = claims.role;
     role = claims.role;
+    permissions = claims.permissions ?? [];
   } catch {
     reply.code(401).send({ error: "Unauthorized", message: "Invalid or expired token" });
     return reply;
   }
-  if (!isAuthorized(policy, role, pathname)) {
+  if (!isAuthorized(permissions, pathname, request.method)) {
     reply.code(403).send({ error: "Forbidden", message: `Role '${role}' may not access ${pathname}` });
     return reply;
   }
@@ -139,6 +122,14 @@ await app.register(proxy, {
   upstream: upstream.user,
   prefix: "/users",
   rewritePrefix: "/users",
+  ...proxyDefaults
+});
+
+// Role administration (authorized via roles:read / roles:write permissions).
+await app.register(proxy, {
+  upstream: upstream.user,
+  prefix: "/roles",
+  rewritePrefix: "/roles",
   ...proxyDefaults
 });
 
@@ -192,9 +183,3 @@ await app.register(proxy, {
 
 const port = Number(process.env.API_GATEWAY_PORT ?? 4000);
 await app.listen({ port, host: "0.0.0.0" });
-
-// Pull the live policy once the gateway is up, then keep it warm.
-void refreshPolicy();
-const POLICY_REFRESH_MS = Number(process.env.RBAC_POLICY_REFRESH_MS ?? 5 * 60 * 1000);
-const policyTimer = setInterval(() => void refreshPolicy(), POLICY_REFRESH_MS);
-policyTimer.unref();

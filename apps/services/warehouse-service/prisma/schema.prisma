@@ -11,7 +11,8 @@ datasource db {
 }
 
 model WarehouseRecord {
-  id         String   @id
+  id         String   @id @default(uuid()) @db.Uuid
+  code       String   @unique
   city       String
   name       String
   util       Float    @default(0)
@@ -26,8 +27,8 @@ model WarehouseRecord {
 }
 
 model WarehouseLaneOccupancy {
-  id           String   @id
-  warehouseId  String   @map("warehouse_id")
+  id           String   @id @default(uuid()) @db.Uuid
+  warehouseId  String   @map("warehouse_id") @db.Uuid
   laneIndex    Int      @map("lane_index")
   occupancyPct Int      @map("occupancy_pct")
   createdAt    DateTime @default(now()) @map("created_at")
@@ -36,8 +37,8 @@ model WarehouseLaneOccupancy {
 }
 
 model WarehouseStockItem {
-  id             String   @id
-  warehouseId    String   @map("warehouse_id")
+  id             String   @id @default(uuid()) @db.Uuid
+  warehouseId    String   @map("warehouse_id") @db.Uuid
   sku            String
   name           String
   onHand         Int      @default(0) @map("on_hand")

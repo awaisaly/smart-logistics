@@ -3,8 +3,9 @@ CREATE SCHEMA IF NOT EXISTS "public";
 
 -- CreateTable
 CREATE TABLE "courier_records" (
-    "id" TEXT NOT NULL,
-    "user_id" TEXT NOT NULL,
+    "id" UUID NOT NULL,
+    "code" TEXT NOT NULL,
+    "user_id" UUID NOT NULL,
     "name" TEXT NOT NULL,
     "city" TEXT NOT NULL DEFAULT 'Karachi',
     "zone" TEXT NOT NULL DEFAULT 'Unassigned',
@@ -19,4 +20,7 @@ CREATE TABLE "courier_records" (
 
     CONSTRAINT "courier_records_pkey" PRIMARY KEY ("id")
 );
+
+-- CreateIndex
+CREATE UNIQUE INDEX "courier_records_code_key" ON "courier_records"("code");
 

@@ -32,6 +32,9 @@ importers:
 
   apps/frontend:
     dependencies:
+      '@smartlogistics/shared-types':
+        specifier: workspace:*
+        version: link:../../packages/shared-types
       '@tanstack/react-router':
         specifier: ^1.120.5
         version: 1.170.7(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
@@ -170,6 +173,9 @@ importers:
       '@smartlogistics/shared-middleware':
         specifier: workspace:*
         version: link:../../../packages/shared-middleware
+      '@smartlogistics/shared-types':
+        specifier: workspace:*
+        version: link:../../../packages/shared-types
       fastify:
         specifier: ^4.28.1
         version: 4.29.1
@@ -214,27 +220,18 @@ importers:
       '@prisma/client':
         specifier: ^6.16.0
         version: 6.19.3(prisma@6.19.3(typescript@5.9.3))(typescript@5.9.3)
-      '@smartlogistics/shared-events':
-        specifier: workspace:*
-        version: link:../../../packages/shared-events
       '@smartlogistics/shared-middleware':
         specifier: workspace:*
         version: link:../../../packages/shared-middleware
+      '@smartlogistics/shared-types':
+        specifier: workspace:*
+        version: link:../../../packages/shared-types
       '@temporalio/client':
-        specifier: ^1.11.5
-        version: 1.16.2
-      '@temporalio/worker':
-        specifier: ^1.11.5
-        version: 1.16.2(tslib@2.8.1)
-      '@temporalio/workflow':
         specifier: ^1.11.5
         version: 1.16.2
       fastify:
         specifier: ^4.28.1
         version: 4.29.1
-      kafkajs:
-        specifier: ^2.2.4
-        version: 2.2.4
     devDependencies:
       prisma:
         specifier: ^6.16.0
@@ -314,6 +311,40 @@ importers:
         specifier: ^5.8.3
         version: 5.9.3
 
+  apps/services/temporal-service:
+    dependencies:
+      '@prisma/client':
+        specifier: ^6.16.0
+        version: 6.19.3(prisma@6.19.3(typescript@5.9.3))(typescript@5.9.3)
+      '@smartlogistics/shared-events':
+        specifier: workspace:*
+        version: link:../../../packages/shared-events
+      '@smartlogistics/shared-middleware':
+        specifier: workspace:*
+        version: link:../../../packages/shared-middleware
+      '@temporalio/worker':
+        specifier: ^1.11.5
+        version: 1.16.2(tslib@2.8.1)
+      '@temporalio/workflow':
+        specifier: ^1.11.5
+        version: 1.16.2
+      fastify:
+        specifier: ^4.28.1
+        version: 4.29.1
+      kafkajs:
+        specifier: ^2.2.4
+        version: 2.2.4
+    devDependencies:
+      prisma:
+        specifier: ^6.16.0
+        version: 6.19.3(typescript@5.9.3)
+      tsx:
+        specifier: ^4.20.3
+        version: 4.22.3
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
+
   apps/services/tracking-service:
     dependencies:
       '@smartlogistics/shared-events':
@@ -350,6 +381,9 @@ importers:
       '@smartlogistics/shared-middleware':
         specifier: workspace:*
         version: link:../../../packages/shared-middleware
+      '@smartlogistics/shared-types':
+        specifier: workspace:*
+        version: link:../../../packages/shared-types
       fastify:
         specifier: ^4.28.1
         version: 4.29.1

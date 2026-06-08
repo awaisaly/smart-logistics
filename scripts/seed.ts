@@ -2,7 +2,8 @@
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
 import { MongoClient } from "mongodb";
-import { databaseUrl, ROLE_DEFS } from "@smartlogistics/shared-middleware";
+import { databaseUrl } from "@smartlogistics/shared-middleware";
+import { ALL_PERMISSIONS, courierCode, exceptionCode, rmaCode, uniqueTrackingNumber, warehouseCode, workflowCode } from "@smartlogistics/shared-types";
 
 // Per-service Prisma clients (each service owns its own database/schema).
 import { PrismaClient as UserPrisma } from "../apps/services/user-service/src/generated/prisma/index.js";
@@ -217,19 +218,47 @@ function agoLabelFrom(d: Date): string {
   return ageLabel(minutesSince(d)) + " ago";
 }
 
-// A timestamp uniformly between `start` and now (for child rows that must occur
-// after their parent record's creation).
-function betweenNow(start: Date): Date {
-  const lo = start.getTime();
-  const hi = Date.now();
-  if (hi <= lo) return new Date(lo);
-  return new Date(randInt(lo, hi));
-}
-
 function minutesSinceLocalMidnight(): number {
   const now = new Date();
   const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
   return Math.max(1, Math.floor((now.getTime() - midnight.getTime()) / 60_000));
+}
+
+function startOfLocalDay(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
+}
+
+function endOfLocalDay(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
+}
+
+function addLocalDays(d: Date, days: number): Date {
+  const next = new Date(d);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+/** How many calendar days ahead of today to pre-seed (inclusive of today = day 0). */
+const SEED_HORIZON_DAYS = 10;
+
+// Random timestamp on a local calendar day: 0 = today, 1 = tomorrow, … up to horizon.
+function dayOffsetCreatedAt(dayOffset: number): Date {
+  const dayStart = addLocalDays(startOfLocalDay(new Date()), dayOffset);
+  const dayEnd = endOfLocalDay(dayStart);
+  return new Date(randInt(dayStart.getTime(), dayEnd.getTime()));
+}
+
+// A timestamp uniformly between `start` and `end` (for child rows tied to a parent).
+function betweenDates(start: Date, end: Date): Date {
+  const lo = start.getTime();
+  const hi = end.getTime();
+  if (hi <= lo) return new Date(lo);
+  return new Date(randInt(lo, hi));
+}
+
+// Child timestamps fall after the parent, capped at the end of the parent's local day.
+function afterParent(parent: Date): Date {
+  return betweenDates(parent, endOfLocalDay(parent));
 }
 
 // A timestamp somewhere earlier today (since local midnight). Used for "current"
@@ -238,20 +267,21 @@ function todayCreatedAt(): Date {
   return new Date(Date.now() - randInt(0, minutesSinceLocalMidnight()) * 60_000);
 }
 
-// Recent-biased timestamp: with probability `todayPct` it lands within today,
-// otherwise it spreads across the last `spreadDays`. Keeps live feeds (events,
-// workflows, DLQ) populated for Today while still expanding with wider ranges.
-function recentBiasedCreatedAt(todayPct = 0.4, spreadDays = 7): Date {
-  if (Math.random() < todayPct) return todayCreatedAt();
-  return new Date(Date.now() - randInt(0, spreadDays * 24 * 60) * 60_000);
+// Recent-biased timestamp spread across today + the forward horizon, with a tail
+// in the last `pastSpreadDays`. Keeps live feeds populated day-by-day for ~10 days.
+function recentBiasedCreatedAt(pastSpreadDays = 7): Date {
+  const r = Math.random();
+  if (r < 0.45) return dayOffsetCreatedAt(randInt(0, SEED_HORIZON_DAYS));
+  if (r < 0.65) return todayCreatedAt();
+  return new Date(Date.now() - randInt(0, pastSpreadDays * 24 * 60) * 60_000);
 }
 
-// Layered distribution for shipments so counts grow with the selected range:
-// ~12% today, ~18% within the last 7 days, the remainder spread across 90 days.
+// Layered distribution for shipments: ~35% across today+next 10 days, ~15% last week,
+// remainder across 90 days of history so every preset (Today / 7d / 30d / 90d) has data.
 function shipmentCreatedAt(i: number, count: number): Date {
   const r = i / Math.max(count, 1);
-  if (r < 0.12) return todayCreatedAt();
-  if (r < 0.30) return new Date(Date.now() - randInt(0, 7 * 24 * 60) * 60_000);
+  if (r < 0.35) return dayOffsetCreatedAt(randInt(0, SEED_HORIZON_DAYS));
+  if (r < 0.50) return new Date(Date.now() - randInt(1, 7 * 24 * 60) * 60_000);
   return randomCreatedAt(90);
 }
 
@@ -268,6 +298,72 @@ function emailFromName(name: string, suffix: string | number): string {
 // Domain generators
 
 interface SeedUser { id: string; email: string; role: string; name: string; phone: string; employeeId: string; region: string }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Role catalog — seeds the `roles` table. At runtime the table is authoritative.
+//
+//   • `pages`       drive frontend nav/route access.
+//   • `permissions` drive granular portal/API actions (gateway + UI).
+//   • `apiPrefixes` kept for documentation / legacy coarse routing hints.
+interface RoleSeed {
+  id: string;
+  key: string;
+  label: string;
+  description: string;
+  pages: string[];
+  apiPrefixes: string[];
+  permissions: string[];
+  isSystem?: boolean;
+}
+
+const COMMON_READ = ["/analytics", "/shipments", "/tracking", "/dispatch", "/warehouses", "/couriers", "/ai"];
+
+const ROLE_SEED: RoleSeed[] = [
+  {
+    id: "10000000-0000-4000-8000-000000000001",
+    key: "admin",
+    label: "Administrator",
+    description: "Full access to every console page and management API.",
+    pages: ["overview", "shipments", "dispatch", "warehouse", "couriers", "events", "analytics", "returns", "observability", "ai"],
+    apiPrefixes: ["/shipments", "/warehouses", "/couriers", "/dispatch", "/tracking", "/notifications", "/analytics", "/ai", "/users"],
+    permissions: [...ALL_PERMISSIONS],
+    isSystem: true
+  },
+  {
+    id: "10000000-0000-4000-8000-000000000002",
+    key: "warehouse_operator",
+    label: "Warehouse Operator",
+    description: "Inbound/outbound flows and the dispatch workflows moving them.",
+    pages: ["overview", "shipments", "dispatch", "warehouse", "events", "ai"],
+    apiPrefixes: COMMON_READ,
+    permissions: [
+      "shipments:read", "shipments:write",
+      "dispatch:read", "dispatch:write",
+      "warehouse:read", "warehouse:write",
+      "tracking:read", "analytics:read", "ai:use"
+    ]
+  },
+  {
+    id: "10000000-0000-4000-8000-000000000003",
+    key: "customer_support",
+    label: "Customer Support",
+    description: "Cases, returns, SLAs and the analytics behind them.",
+    pages: ["overview", "shipments", "returns", "analytics", "ai"],
+    apiPrefixes: COMMON_READ,
+    permissions: ["shipments:read", "returns:read", "returns:write", "analytics:read", "tracking:read", "ai:use"]
+  },
+  {
+    id: "10000000-0000-4000-8000-000000000004",
+    key: "courier",
+    label: "Courier",
+    description: "Routes, deliveries and the shipments being carried.",
+    pages: ["overview", "couriers", "shipments", "ai"],
+    apiPrefixes: COMMON_READ,
+    permissions: ["shipments:read", "couriers:read", "couriers:write", "tracking:read", "ai:use"]
+  }
+];
+
+const ROLE_LABEL_BY_KEY: Record<string, string> = Object.fromEntries(ROLE_SEED.map((r) => [r.key, r.label]));
 
 // Stable primary admin baked into the seed so the operations console always opens
 // against a known user. Inserted LAST so `created_at DESC` picks him first.
@@ -315,7 +411,7 @@ function genUsers(adminCount = 2, supportCount = 3, warehouseCount = 6, courierC
   return out;
 }
 
-interface SeedWarehouse { id: string; city: string; region: string; name: string; util: number; lanes: number; inbound: number; outbound: number; throughput: string; stockLow: number; createdAt: Date }
+interface SeedWarehouse { id: string; code: string; city: string; region: string; name: string; util: number; lanes: number; inbound: number; outbound: number; throughput: string; stockLow: number; createdAt: Date }
 function genWarehouses(): SeedWarehouse[] {
   return CITIES.slice(0, 8).map((city, i) => {
     const util = randFloat(0.55, 0.94);
@@ -324,7 +420,8 @@ function genWarehouses(): SeedWarehouse[] {
     const outbound = randInt(160, 800);
     const throughputDelta = randInt(-9, 14);
     return {
-      id: `${city.code}-W${i + 1}`,
+      id: randomUUID(),
+      code: warehouseCode(city.code, i),
       city: city.name,
       region: city.region,
       name: `${city.name} ${pickOne(["North", "South", "Central", "East", "West"])} Hub`,
@@ -340,7 +437,7 @@ function genWarehouses(): SeedWarehouse[] {
   });
 }
 
-interface SeedCourier { id: string; userId: string; name: string; city: string; zone: string; status: string; load: number; capacity: number; rating: number; since: string; attempts: number; delivered: number; createdAt: Date }
+interface SeedCourier { id: string; code: string; userId: string; name: string; city: string; zone: string; status: string; load: number; capacity: number; rating: number; since: string; attempts: number; delivered: number; createdAt: Date }
 function genCouriers(users: SeedUser[]): SeedCourier[] {
   const courierUsers = users.filter((u) => u.role === "courier");
   return courierUsers.map((u, i) => {
@@ -348,7 +445,8 @@ function genCouriers(users: SeedUser[]): SeedCourier[] {
     const load = randInt(0, capacity);
     const delivered = randInt(40, 480);
     return {
-      id: `C-${(4000 + i).toString()}`,
+      id: randomUUID(),
+      code: courierCode(i),
       userId: u.id,
       name: u.name,
       city: pickOne(CITIES).name,
@@ -366,31 +464,46 @@ function genCouriers(users: SeedUser[]): SeedCourier[] {
   });
 }
 
-interface SeedShipment { id: string; from: string; to: string; weight: string; status: string; priority: string; courier: string; placed: string; eta: string; risk: number; items: number; createdAt: Date; transitMinutes: number }
+interface SeedShipment {
+  id: string;
+  trackingNumber: string;
+  fromWarehouseId: string;
+  toWarehouseId: string;
+  fromCode: string;
+  toCode: string;
+  courierId: string;
+  courierCode: string;
+  weight: string;
+  status: string;
+  priority: string;
+  placed: string;
+  eta: string;
+  risk: number;
+  items: number;
+  createdAt: Date;
+  transitMinutes: number;
+}
 function genShipments(warehouses: SeedWarehouse[], couriers: SeedCourier[], count: number): SeedShipment[] {
-  // Tracking ids are drawn from a finite numeric space, so guard against
-  // collisions (the primary key is `id`) by retrying until unique.
-  const usedIds = new Set<string>();
-  const nextId = (): string => {
-    let id = `SL-${randInt(2_300_000, 2_499_999)}`;
-    while (usedIds.has(id)) id = `SL-${randInt(2_300_000, 2_499_999)}`;
-    usedIds.add(id);
-    return id;
-  };
+  const usedTracking = new Set<string>();
   return Array.from({ length: count }).map((_, i) => {
     const fromW = pickOne(warehouses);
     const toW = pickOne(warehouses.filter((w) => w.id !== fromW.id));
+    const courier = pickOne(couriers);
     const status = pickOne(SHIPMENT_STATUSES);
     const createdAt = shipmentCreatedAt(i, count);
     const etaInMin = randInt(30, 60 * 30);
     return {
-      id: nextId(),
-      from: fromW.id,
-      to: toW.id,
+      id: randomUUID(),
+      trackingNumber: uniqueTrackingNumber(usedTracking),
+      fromWarehouseId: fromW.id,
+      toWarehouseId: toW.id,
+      fromCode: fromW.code,
+      toCode: toW.code,
+      courierId: courier.id,
+      courierCode: courier.code,
       weight: `${randFloat(0.5, 24)}kg`,
       status,
       priority: pickOne(SHIPMENT_PRIORITIES),
-      courier: pickOne(couriers).id,
       placed: agoLabelFrom(createdAt),
       eta: `in ${ageLabel(etaInMin)}`,
       risk: randFloat(0.02, 0.92),
@@ -402,14 +515,16 @@ function genShipments(warehouses: SeedWarehouse[], couriers: SeedCourier[], coun
   });
 }
 
-interface SeedReturn { id: string; shipment: string; reason: string; initiated: string; stage: string; customer: string; refund: string; createdAt: Date }
+interface SeedReturn { id: string; code: string; shipmentId: string; shipmentTracking: string; reason: string; initiated: string; stage: string; customer: string; refund: string; createdAt: Date }
 function genReturns(shipments: SeedShipment[]): SeedReturn[] {
   const sample = pickN(shipments, Math.min(28, Math.floor(shipments.length * 0.08)));
   return sample.map((s) => {
-    const createdAt = betweenNow(s.createdAt);
+    const createdAt = afterParent(s.createdAt);
     return {
-      id: `RMA-${randInt(800, 9999)}`,
-      shipment: s.id,
+      id: randomUUID(),
+      code: rmaCode(),
+      shipmentId: s.id,
+      shipmentTracking: s.trackingNumber,
       reason: pickOne(RETURN_REASONS),
       initiated: agoLabelFrom(createdAt),
       stage: pickOne(RETURN_STAGES),
@@ -420,14 +535,16 @@ function genReturns(shipments: SeedShipment[]): SeedReturn[] {
   });
 }
 
-interface SeedException { id: string; shipment: string; kind: string; severity: string; age: string; owner: string; createdAt: Date }
+interface SeedException { id: string; code: string; shipmentId: string; shipmentTracking: string; kind: string; severity: string; age: string; owner: string; createdAt: Date }
 function genExceptions(shipments: SeedShipment[]): SeedException[] {
   const sample = pickN(shipments, Math.min(18, Math.floor(shipments.length * 0.05)));
   return sample.map((s) => {
-    const createdAt = betweenNow(s.createdAt);
+    const createdAt = afterParent(s.createdAt);
     return {
-      id: `EX-${randInt(1000, 9999)}`,
-      shipment: s.id,
+      id: randomUUID(),
+      code: exceptionCode(),
+      shipmentId: s.id,
+      shipmentTracking: s.trackingNumber,
       kind: pickOne(EXCEPTION_KINDS),
       severity: pickOne(EXCEPTION_SEVERITIES),
       age: ageLabel(minutesSince(createdAt)),
@@ -474,7 +591,7 @@ interface SeedAuditRow { id: string; shipmentId: string; t: string; actor: strin
 function genShipmentAudits(shipments: SeedShipment[]): SeedAuditRow[] {
   return shipments.flatMap((s) =>
     Array.from({ length: randInt(3, 6) }).map(() => {
-      const tDate = betweenNow(s.createdAt);
+      const tDate = afterParent(s.createdAt);
       return {
       id: randomUUID(),
       shipmentId: s.id,
@@ -542,18 +659,21 @@ function genStockItems(warehouses: SeedWarehouse[]): SeedStockItem[] {
   );
 }
 
-interface SeedWorkflow { id: string; type: string; shipment: string; started: string; duration: string; status: string; step: string; retries: number; error: string | null; createdAt: Date }
+interface SeedWorkflow { id: string; code: string; type: string; shipmentId: string; shipmentTracking: string; started: string; duration: string; status: string; step: string; retries: number; error: string | null; createdAt: Date }
 function genWorkflows(shipments: SeedShipment[]): SeedWorkflow[] {
   return Array.from({ length: 28 }).map(() => {
     const status = pickOne(WORKFLOW_STATUSES);
     const failing = status === "failing" || status === "compensating";
     const ship = pickOne(shipments);
+    const type = pickOne(WORKFLOW_TYPES);
     // Workflows are recent operational runs; bias them toward today.
-    const createdAt = recentBiasedCreatedAt(0.4, 7);
+    const createdAt = recentBiasedCreatedAt();
     return {
-      id: `TPL-${pickOne(WORKFLOW_TYPES).slice(0, 4).toLowerCase()}-${Math.random().toString(36).slice(2, 8)}`,
-      type: pickOne(WORKFLOW_TYPES),
-      shipment: ship.id,
+      id: randomUUID(),
+      code: workflowCode(type),
+      type,
+      shipmentId: ship.id,
+      shipmentTracking: ship.trackingNumber,
       started: agoLabelFrom(createdAt),
       duration: `${randInt(8, 380)}s`,
       status,
@@ -583,11 +703,11 @@ interface SeedNotification { id: string; eventId: string; channel: string; recip
 function genNotifications(shipments: SeedShipment[]): SeedNotification[] {
   return Array.from({ length: 80 }).map(() => ({
     id: randomUUID(),
-    eventId: pickOne(shipments).id,
+    eventId: randomUUID(),
     channel: pickOne(NOTIFICATION_CHANNELS),
     recipient: `${pickOne(["+92301", "+92321", "+92345"])}${randInt(1_000_000, 9_999_999)}`,
     status: pickOne(NOTIFICATION_STATUSES),
-    createdAt: randomCreatedAt(),
+    createdAt: recentBiasedCreatedAt(),
   }));
 }
 
@@ -606,7 +726,7 @@ function genTrackingEvents(shipments: SeedShipment[]): Array<{ t: string; topic:
         `weight=${s.weight}`,
       ]),
       lag: `${randInt(1, 280)}ms`,
-      created_at: recentBiasedCreatedAt(0.4, 7),
+      created_at: recentBiasedCreatedAt(),
     };
   });
 }
@@ -648,7 +768,7 @@ function genDlqMessages(shipments: SeedShipment[]): Array<Record<string, unknown
     payload: `error=${pickOne(FAILURE_KINDS)}`,
     received: ageLabel(randInt(2, 60 * 18)) + " ago",
     attempts: randInt(2, 9),
-    created_at: recentBiasedCreatedAt(0.4, 7),
+    created_at: recentBiasedCreatedAt(),
   }));
 }
 
@@ -659,7 +779,7 @@ function genDlqReplays(): Array<Record<string, unknown>> {
     range: `${timeOfDay()} → ${timeOfDay()}`,
     items: randInt(2, 64),
     status: pickOne(["queued", "replaying", "completed", "failed"]),
-    created_at: recentBiasedCreatedAt(0.4, 7),
+    created_at: recentBiasedCreatedAt(),
   }));
 }
 
@@ -808,24 +928,38 @@ function genAiMetrics(): Record<string, unknown> {
 // Writers
 
 // Idempotently seeds the normalized roles table (matching user-service startup)
-// and returns a role key → id map used to set each user's role_id FK.
-async function seedRoles(): Promise<Map<string, number>> {
-  const byKey = new Map<string, number>();
-  for (const def of ROLE_DEFS) {
+// and returns a role key → id (UUID) map used to set each user's role_id FK.
+async function seedRoles(): Promise<Map<string, string>> {
+  const byKey = new Map<string, string>();
+  for (const def of ROLE_SEED) {
     const row = await userDb.role.upsert({
-      where: { key: def.key },
-      create: { key: def.key, label: def.label, description: def.description, pages: def.pages, apiPrefixes: def.apiPrefixes },
-      update: { label: def.label, description: def.description, pages: def.pages, apiPrefixes: def.apiPrefixes }
+      where: { id: def.id },
+      create: {
+        id: def.id,
+        label: def.label,
+        description: def.description,
+        pages: def.pages,
+        apiPrefixes: def.apiPrefixes,
+        permissions: def.permissions,
+        isSystem: def.isSystem ?? false
+      },
+      update: {
+        label: def.label,
+        description: def.description,
+        pages: def.pages,
+        apiPrefixes: def.apiPrefixes,
+        permissions: def.permissions,
+        isSystem: def.isSystem ?? false
+      }
     });
     byKey.set(def.key, row.id);
   }
   return byKey;
 }
 
-async function writeUsers(users: SeedUser[], roleIdByKey: Map<string, number>): Promise<void> {
-  // Clear in FK-safe order (admin_profiles & auth_tokens reference users); keep roles.
+async function writeUsers(users: SeedUser[], roleIdByKey: Map<string, string>): Promise<void> {
+  // Clear in FK-safe order (auth_tokens reference users); keep roles.
   await userDb.authToken.deleteMany({});
-  await userDb.adminProfile.deleteMany({});
   await userDb.user.deleteMany({});
   for (const u of users) {
     // PRIMARY_ADMIN (last in the array) keeps the newest created_at so it sorts first.
@@ -835,7 +969,8 @@ async function writeUsers(users: SeedUser[], roleIdByKey: Map<string, number>): 
         id: u.id,
         email: u.email,
         passwordHash: "seed-password-hash",
-        role: u.role,
+        // User.role is the denormalized display label; authorization uses role_id.
+        role: ROLE_LABEL_BY_KEY[u.role] ?? u.role,
         roleId: roleIdByKey.get(u.role) ?? null,
         fullName: u.name,
         phone: u.phone,
@@ -845,17 +980,6 @@ async function writeUsers(users: SeedUser[], roleIdByKey: Map<string, number>): 
         createdAt: isPrimaryAdmin ? new Date() : randomCreatedAt()
       }
     });
-    if (u.role === "admin") {
-      await userDb.adminProfile.create({
-        data: {
-          userId: u.id,
-          accessLevel: isPrimaryAdmin ? "owner" : "standard",
-          managedRegions: isPrimaryAdmin ? ["Global"] : [u.region],
-          canManageUsers: true,
-          notes: isPrimaryAdmin ? "Primary console administrator" : null
-        }
-      });
-    }
   }
 }
 
@@ -874,12 +998,16 @@ async function writeShipments(
   await shipmentDb.shipmentRecord.createMany({
     data: shipments.map((s) => ({
       id: s.id,
-      from: s.from,
-      to: s.to,
+      trackingNumber: s.trackingNumber,
+      fromWarehouseId: s.fromWarehouseId,
+      toWarehouseId: s.toWarehouseId,
+      fromCode: s.fromCode,
+      toCode: s.toCode,
+      courierId: s.courierId,
+      courierCode: s.courierCode,
       weight: s.weight,
       status: s.status,
       priority: s.priority,
-      courier: s.courier,
       placed: s.placed,
       eta: s.eta,
       risk: s.risk,
@@ -889,10 +1017,31 @@ async function writeShipments(
     }))
   });
   await shipmentDb.shipmentReturn.createMany({
-    data: returns.map((r) => ({ id: r.id, shipment: r.shipment, reason: r.reason, initiated: r.initiated, stage: r.stage, customer: r.customer, refund: r.refund, createdAt: r.createdAt }))
+    data: returns.map((r) => ({
+      id: r.id,
+      code: r.code,
+      shipmentId: r.shipmentId,
+      shipmentTracking: r.shipmentTracking,
+      reason: r.reason,
+      initiated: r.initiated,
+      stage: r.stage,
+      customer: r.customer,
+      refund: r.refund,
+      createdAt: r.createdAt
+    }))
   });
   await shipmentDb.shipmentException.createMany({
-    data: exceptions.map((e) => ({ id: e.id, shipment: e.shipment, kind: e.kind, severity: e.severity, age: e.age, ownerName: e.owner, createdAt: e.createdAt }))
+    data: exceptions.map((e) => ({
+      id: e.id,
+      code: e.code,
+      shipmentId: e.shipmentId,
+      shipmentTracking: e.shipmentTracking,
+      kind: e.kind,
+      severity: e.severity,
+      age: e.age,
+      ownerName: e.owner,
+      createdAt: e.createdAt
+    }))
   });
   await shipmentDb.shipmentTimeline.createMany({
     data: timelines.map((t) => ({ id: t.id, shipmentId: t.shipmentId, t: t.t, label: t.label, descr: t.descr, done: t.done, active: t.active, createdAt: t.createdAt }))
@@ -907,7 +1056,7 @@ async function writeWarehouses(warehouses: SeedWarehouse[], lanes: SeedLanes[], 
   await warehouseDb.warehouseLaneOccupancy.deleteMany({});
   await warehouseDb.warehouseRecord.deleteMany({});
   await warehouseDb.warehouseRecord.createMany({
-    data: warehouses.map((w) => ({ id: w.id, city: w.city, name: w.name, util: w.util, lanes: w.lanes, inbound: w.inbound, outbound: w.outbound, throughput: w.throughput, stockLow: w.stockLow, createdAt: w.createdAt }))
+    data: warehouses.map((w) => ({ id: w.id, code: w.code, city: w.city, name: w.name, util: w.util, lanes: w.lanes, inbound: w.inbound, outbound: w.outbound, throughput: w.throughput, stockLow: w.stockLow, createdAt: w.createdAt }))
   });
   await warehouseDb.warehouseLaneOccupancy.createMany({
     data: lanes.map((l) => ({ id: l.id, warehouseId: l.warehouseId, laneIndex: l.laneIndex, occupancyPct: l.occupancyPct }))
@@ -920,7 +1069,7 @@ async function writeWarehouses(warehouses: SeedWarehouse[], lanes: SeedLanes[], 
 async function writeCouriers(couriers: SeedCourier[]): Promise<void> {
   await courierDb.courierRecord.deleteMany({});
   await courierDb.courierRecord.createMany({
-    data: couriers.map((c) => ({ id: c.id, userId: c.userId, name: c.name, city: c.city, zone: c.zone, status: c.status, load: c.load, capacity: c.capacity, rating: c.rating, since: c.since, attempts: c.attempts, delivered: c.delivered, createdAt: c.createdAt }))
+    data: couriers.map((c) => ({ id: c.id, code: c.code, userId: c.userId, name: c.name, city: c.city, zone: c.zone, status: c.status, load: c.load, capacity: c.capacity, rating: c.rating, since: c.since, attempts: c.attempts, delivered: c.delivered, createdAt: c.createdAt }))
   });
 }
 
@@ -929,7 +1078,20 @@ async function writeDispatch(workflows: SeedWorkflow[], failures: SeedFailureMod
   await dispatchDb.dispatchWorkflow.deleteMany({});
   await dispatchDb.dispatchFailureMode.deleteMany({});
   await dispatchDb.dispatchWorkflow.createMany({
-    data: workflows.map((w) => ({ id: w.id, type: w.type, shipment: w.shipment, started: w.started, duration: w.duration, status: w.status, step: w.step, retries: w.retries, error: w.error, createdAt: w.createdAt }))
+    data: workflows.map((w) => ({
+      id: w.id,
+      code: w.code,
+      type: w.type,
+      shipmentId: w.shipmentId,
+      shipmentTracking: w.shipmentTracking,
+      started: w.started,
+      duration: w.duration,
+      status: w.status,
+      step: w.step,
+      retries: w.retries,
+      error: w.error,
+      createdAt: w.createdAt
+    }))
   });
   await dispatchDb.dispatchFailureMode.createMany({
     data: failures.map((f) => ({ id: f.id, kind: f.kind, count: f.count, trend: f.trend, samples: f.samples }))
@@ -1012,7 +1174,7 @@ async function writeTracking(events: ReturnType<typeof genTrackingEvents>, topic
 // Orchestrator
 
 async function main(): Promise<void> {
-  console.log("SmartLogistics seed starting…");
+  console.log(`SmartLogistics seed starting… (today + ${SEED_HORIZON_DAYS} days forward)`);
   const roleIdByKey = await seedRoles();
   console.log(`✓ roles: ${roleIdByKey.size}`);
 

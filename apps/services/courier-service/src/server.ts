@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import { z } from "zod";
 import { buildLogger, setupMetrics, parseRange } from "@smartlogistics/shared-middleware";
+import { courierCode } from "@smartlogistics/shared-types";
 import { prisma } from "./db.js";
 
 const app = Fastify({ logger: buildLogger("courier-service") });
@@ -9,9 +10,10 @@ setupMetrics(app, "courier-service");
 app.get("/health", async () => ({ ok: true, service: "courier-service" }));
 
 app.post("/", async (request) => {
-  const payload = z.object({ userId: z.string(), name: z.string() }).parse(request.body);
+  const payload = z.object({ userId: z.string().uuid(), name: z.string() }).parse(request.body);
   const created = {
-    id: `C-${Math.floor(1000 + Math.random() * 9000)}`,
+    id: crypto.randomUUID(),
+    code: courierCode(Math.floor(Math.random() * 9000)),
     userId: payload.userId,
     name: payload.name,
     city: "Karachi",
@@ -36,6 +38,7 @@ app.get("/", async (request) => {
     take: 300,
     select: {
       id: true,
+      code: true,
       name: true,
       city: true,
       zone: true,

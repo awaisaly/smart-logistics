@@ -18,6 +18,7 @@
     "@fastify/rate-limit": "^9.1.0",
     "@smartlogistics/shared-config": "workspace:*",
     "@smartlogistics/shared-middleware": "workspace:*",
+    "@smartlogistics/shared-types": "workspace:*",
     "fastify": "^4.28.1"
   },
   "devDependencies": {

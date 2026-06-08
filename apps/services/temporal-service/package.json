@@ -1,0 +1,29 @@
+{
+  "name": "@smartlogistics/temporal-service",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "echo 'lint temporal-service'",
+    "test": "echo 'see root tests/temporal'",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.16.0",
+    "@smartlogistics/shared-events": "workspace:*",
+    "@smartlogistics/shared-middleware": "workspace:*",
+    "@temporalio/worker": "^1.11.5",
+    "@temporalio/workflow": "^1.11.5",
+    "fastify": "^4.28.1",
+    "kafkajs": "^2.2.4"
+  },
+  "devDependencies": {
+    "prisma": "^6.16.0",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3"
+  }
+}

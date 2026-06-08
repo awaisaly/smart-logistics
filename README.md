@@ -14,7 +14,7 @@ Key capabilities:
 - **Role-based access control** — Admin, Warehouse Operator, Customer Support, and Courier roles are defined in a normalized `roles` table; page access is data-driven from the backend and API authorization is enforced centrally at the gateway via signed JWTs (see §5).
 - **Date-range filtering** — every page defaults to "today" and supports Today / 7d / 30d / 90d presets plus a custom range; servers filter on real timestamps.
 - **Live analytics** — business metrics (KPIs, time-series, histograms, SLA, regions, exception zones) are recomputed live from shipment data per selected range.
-- **Orchestrated dispatch** — dispatch runs as a Temporal workflow (validate → reserve → label → assign → track → dispatch) executed by an in-process worker, with a graceful inline fallback when Temporal is unavailable.
+- **Orchestrated dispatch** — dispatch runs as a compensating SAGA in **temporal-service** (validate → reserve inventory → set status → assign courier → increment load → publish); **dispatch-service** is HTTP-only and starts workflows via the Temporal client (503 if Temporal is down).
 - **Event-driven fan-out** — on dispatch completion the platform publishes to Kafka and three independent consumer groups react: tracking records a milestone, analytics counts the event, and notification queues a customer update via BullMQ.
 - **AI assistant** — a Groq-backed streaming assistant with tool-calling against live operational data, plus live operational recommendations.
 - **Metrics & observability** — every service exposes Prometheus metrics at `/metrics` (scraped by Prometheus, visualized in Grafana); Jaeger and Temporal UI are provisioned for traces and workflow inspection.
@@ -37,7 +37,8 @@ apps/
     shipment-service/  Shipments, returns, exceptions, timeline, audit
     warehouse-service/ Warehouses, lanes, stock
     courier-service/   Courier roster + assignment
-    dispatch-service/  Temporal dispatch workflows + KPIs
+    dispatch-service/  Dispatch API, KPIs, workflow controls (Temporal client only)
+    temporal-service/ Temporal worker + SAGA activities (direct Prisma/Kafka)
     tracking-service/  Kafka/Mongo event stream, DLQ
     notification-service/ BullMQ notification delivery log
     analytics-service/ Live business metrics + observability snapshots
@@ -70,6 +71,7 @@ flowchart TB
     WS["warehouse-service :4003"]
     CS["courier-service :4004"]
     DS["dispatch-service :4005"]
+    TWS["temporal-service :4011"]
     TS["tracking-service :4006"]
     NS["notification-service :4007"]
     AN["analytics-service :4008"]
@@ -96,6 +98,7 @@ flowchart TB
   WS --> PG & MG
   CS --> PG
   DS --> PG & TEMPORAL
+  TWS --> PG & TEMPORAL & KAFKA
   TS --> MG
   NS --> PG & RD
   AN --> TSDB
@@ -103,7 +106,7 @@ flowchart TB
   AI --> PG & QD
   AI -.tool calls.-> GW
 
-  SS & WS & CS & DS & TS & NS --> KAFKA
+  SS & WS & CS & TWS & TS & NS --> KAFKA
 
   subgraph Obs["Observability"]
     PROM["Prometheus :9090"]
@@ -307,7 +310,9 @@ and `/auth/logout` deletes it for true server-side revocation. The access JWT ca
 Credentials at rest are hardened: passwords are hashed with **scrypt**
 (`scrypt:<salt>:<hash>`, via Node's built-in `crypto`) and verified in constant time;
 refresh tokens are stored only as a **SHA-256 fingerprint**, so a leaked DB row cannot
-be replayed as a live session. The shared `DEMO_PASSWORD` bypass (so any seeded account
+be replayed as a live session. Each refresh row carries an explicit `expires_at`
+(derived from `REFRESH_TOKEN_TTL_DAYS`, default 30) checked on `/auth/refresh`.
+The shared `DEMO_PASSWORD` bypass (so any seeded account
 can sign in to showcase roles) is a convenience that is **disabled when
 `NODE_ENV=production`** — there, only the stored scrypt hashes are accepted. The
 hashing/token helpers live in `packages/shared-middleware/src/auth/password.ts`.
@@ -318,25 +323,30 @@ hashing/token helpers live in `packages/shared-middleware/src/auth/password.ts`.
 
 ### Authorization (centralized at the gateway)
 
-Roles live in a normalized `roles` table (FK from `users_v2.role_id`); each role
-carries `pages` (drives the frontend nav/routes) and `apiPrefixes` (drives gateway
-authorization). The canonical definitions live in
-`packages/shared-middleware/src/auth/roles.ts` and are seeded on user-service startup.
+Roles live in a normalized `roles` table (FK from `users.role_id`); each role
+carries `pages` (frontend nav), `permissions` (granular portal/API actions such as
+`shipments:write`), and optional `apiPrefixes` (legacy coarse routing hints).
+The table is the single source of truth — admins manage roles via `/roles` CRUD.
+Built-in roles are installed by `scripts/seed.ts`; system roles (`isSystem=true`)
+cannot be deleted.
 
 The **API gateway** enforces authorization centrally:
 
-1. On boot it loads the role → `apiPrefixes` policy from `GET /roles` (falling back to
-   the canonical `ROLE_DEFS`, refreshed every `RBAC_POLICY_REFRESH_MS`).
+1. On login the user-service resolves the role's `permissions` from the database
+   and embeds them in the JWT access token.
 2. An `onRequest` hook allowlists public paths (`/health`, `/metrics`, `/auth/login`,
    `/auth/refresh`, `/auth/logout`, `/auth/demo-accounts`); everything else requires a
-   valid Bearer JWT (**401** otherwise) and a path prefix permitted for the caller's
-   role (**403** otherwise). `/users` and `/auth/register` are admin-only.
+   valid Bearer JWT (**401** otherwise). The gateway checks the token's permission list
+   against the requested path and HTTP method (e.g. `GET /shipments` → `shipments:read`,
+   `POST /shipments/...` → `shipments:write`) and returns **403** when denied.
 3. It strips any client-supplied identity headers and injects the verified
    `x-user-id` / `x-user-role` into proxied requests, so downstream services can trust
    them for defense-in-depth.
 
 Page access on the frontend is **data-driven**: the login response includes the user's
-`pages`, and the console renders nav/routes from that list — no hardcoded role map.
+`pages`, and the console renders nav/routes from that list. Granular write actions
+(e.g. shipment escalate, dispatch controls) are gated by `user.permissions` via
+`canPerform()` in the frontend and enforced again at the gateway.
 
 ---
 
@@ -353,7 +363,7 @@ layer or propagated asynchronously over Kafka.
 
 | Service | Engine | Database | Host port | Tables / collections |
 | --- | --- | --- | --- | --- |
-| user-service | PostgreSQL 16 | `user_service` | 5441 | `roles`, `users_v2`, `admin_profiles`, `auth_tokens` |
+| user-service | PostgreSQL 16 | `user_service` | 5441 | `roles`, `users`, `auth_tokens` |
 | shipment-service | PostgreSQL 16 | `shipment_service` | 5433 | `shipment_records`, `shipment_returns`, `shipment_exceptions`, `shipment_timelines`, `shipment_audits_v2` |
 | warehouse-service | PostgreSQL 16 | `warehouse_service` | 5434 | `warehouse_records`, `warehouse_lane_occupancy`, `warehouse_stock_items` |
 | courier-service | PostgreSQL 16 | `courier_service` | 5435 | `courier_records` |
@@ -382,6 +392,7 @@ flowchart TB
   WS["warehouse-service"]
   CS["courier-service"]
   DS["dispatch-service"]
+  TWS["temporal-service"]
   TS["tracking-service"]
   NS["notification-service"]
   AN["analytics-service"]
@@ -391,10 +402,10 @@ flowchart TB
   GW -->|HTTP · x-user-id/role| US & SS & WS & CS & DS & TS & NS & AN & AI
   AI -->|live tool-calls| GW
 
-  %% asynchronous Kafka events — dispatch-completion fan-out
-  DS ==>|shipment.dispatched| TS
-  DS ==>|analytics.event| AN
-  DS ==>|notification.trigger| NS
+  %% asynchronous Kafka events — dispatch-completion fan-out (from temporal-service)
+  TWS ==>|shipment.dispatched| TS
+  TWS ==>|analytics.event| AN
+  TWS ==>|notification.trigger| NS
 
   %% logical data references (read-time, no FK)
   CS -.->|user_id| US
@@ -405,7 +416,9 @@ flowchart TB
   AN -.->|read-only SQL| SS
 ```
 
-Beyond the above, the **dispatch-service** runs its workflows on **Temporal**, the
+Beyond the above, **temporal-service** executes dispatch workflows on **Temporal**
+(with direct cross-DB Prisma access — no HTTP between services during orchestration),
+the **dispatch-service** starts those workflows and exposes KPIs/controls, the
 **notification-service** delivers via **BullMQ/Redis**, and the **ai-service** also
 subscribes to `ai.embedding.trigger` (provisioned for future vector indexing). The
 **warehouse-service** is self-contained — it owns no cross-service references.
@@ -422,20 +435,21 @@ enforced by the database.
 erDiagram
   %% ───────────── user-service (user_service) ─────────────
   roles {
-    int id PK
-    string key UK
+    string id PK
     string label
     string description
     json pages
     json api_prefixes
+    json permissions
+    boolean is_system
     datetime created_at
   }
-  users_v2 {
+  users {
     string id PK
     string email UK
     string password_hash
     string role
-    int role_id FK
+    string role_id FK
     string full_name
     string phone
     string employee_id
@@ -444,19 +458,12 @@ erDiagram
     datetime last_login_at
     datetime created_at
   }
-  admin_profiles {
-    string user_id PK "FK → users_v2"
-    string access_level
-    json managed_regions
-    boolean can_manage_users
-    string notes
-    datetime created_at
-  }
   auth_tokens {
     string id PK
     string user_id FK
     string kind
     string token
+    datetime expires_at
     datetime created_at
   }
 
@@ -580,7 +587,7 @@ erDiagram
     datetime created_at
   }
   dispatch_workflow_audit {
-    int id PK
+    string id PK
     string workflow_id FK
     string actor
     string action
@@ -684,11 +691,10 @@ erDiagram
   }
 
   %% ── DB-enforced foreign keys (user-service) ──
-  roles ||--o{ users_v2 : "role_id"
-  users_v2 ||--o| admin_profiles : "user_id (1:1)"
+  roles ||--o{ users : "role_id"
 
   %% ── intra-service logical references (no FK constraint) ──
-  users_v2 ||..o{ auth_tokens : "user_id"
+  users ||..o{ auth_tokens : "user_id"
   shipment_records ||..o{ shipment_returns : "shipment"
   shipment_records ||..o{ shipment_exceptions : "shipment"
   shipment_records ||..o{ shipment_timelines : "shipment_id"
@@ -699,8 +705,8 @@ erDiagram
   ai_sessions ||..o{ ai_messages : "session_id"
 
   %% ── cross-service / cross-store logical references ──
-  users_v2 ||..o{ courier_records : "user_id « cross-DB »"
-  users_v2 ||..o{ ai_sessions : "user_id « cross-DB »"
+  users ||..o{ courier_records : "user_id « cross-DB »"
+  users ||..o{ ai_sessions : "user_id « cross-DB »"
   shipment_records ||..o{ dispatch_workflows : "shipment « cross-DB »"
   shipment_records ||..o{ events : "key « cross-store »"
   events ||..o{ notification_log_v2 : "event_id « cross-store, via Kafka »"
@@ -710,8 +716,8 @@ erDiagram
 
 | From | Column | → Target | Resolved by |
 | --- | --- | --- | --- |
-| `courier_records` (courier) | `user_id` | `users_v2.id` (user) | App layer at read time |
-| `ai_sessions` (ai) | `user_id` | `users_v2.id` (user) | App layer (auth context) |
+| `courier_records` (courier) | `user_id` | `users.id` (user) | App layer at read time |
+| `ai_sessions` (ai) | `user_id` | `users.id` (user) | App layer (auth context) |
 | `dispatch_workflows` (dispatch) | `shipment` | `shipment_records.id` (shipment) | App layer / workflow input |
 | `events` (tracking) | `key` | `shipment_records.id` (shipment) | Kafka message key |
 | `notification_log_v2` (notification) | `event_id` | tracking `events` (Mongo) | Kafka event → BullMQ job |
@@ -745,7 +751,7 @@ sequenceDiagram
   participant WS as warehouse-service
   participant CS as courier-service
   participant DS as dispatch-service
-  participant TW as Temporal worker
+  participant TWS as temporal-service
   participant K as Kafka
   participant TS as tracking-service
   participant NS as notification-service
@@ -784,10 +790,10 @@ sequenceDiagram
   C->>GW: POST /dispatch/{shipmentId}/trigger
   GW->>DS: proxy
   DS->>DS: UPSERT dispatch_workflows (running)
-  DS->>TW: workflow.start(DispatchWorkflow)
-  DS-->>C: { ok, workflowId, orchestrator }
-  TW->>TW: activities: validate→reserve→label→assign→init-tracking→markDispatched
-  TW->>K: publishDispatchCompleted(shipmentId)
+  DS->>TWS: workflow.start(DispatchWorkflow) via Temporal
+  DS-->>C: { ok, workflowId, orchestrator:"temporal" }
+  TWS->>TWS: SAGA: validate→reserve→status→courier→load→publish
+  TWS->>K: publishDispatched(shipmentId)
 
   Note over K,RD: 5 · Event fan-out to three independent consumer groups
   K-->>TS: shipment.dispatched → record milestone (Mongo)
@@ -870,7 +876,7 @@ sequenceDiagram
   participant CS as courier-service
   participant DB as Postgres · courier_service
 
-  Note over CS,DB: courier_records.user_id is a logical ref to<br/>user-service users_v2 (resolved at the app layer, no FK)
+  Note over CS,DB: courier_records.user_id is a logical ref to<br/>user-service users (resolved at the app layer, no FK)
   C->>GW: POST /couriers { userId, name } · Bearer JWT
   GW->>CS: verify JWT · authorize · proxy
   CS->>CS: zod-validate { userId, name }
@@ -882,7 +888,7 @@ sequenceDiagram
   CS-->>C: { items: [...] }
 ```
 
-### Dispatch — orchestrated dispatch with Temporal + inline fallback (`POST /dispatch/{shipmentId}/trigger`)
+### Dispatch — SAGA orchestration via temporal-service (`POST /dispatch/{shipmentId}/trigger`)
 
 ```mermaid
 sequenceDiagram
@@ -891,25 +897,22 @@ sequenceDiagram
   participant GW as api-gateway
   participant DS as dispatch-service
   participant DB as Postgres · dispatch_service
-  participant TW as Temporal worker
+  participant TC as Temporal server
+  participant TWS as temporal-service worker
   participant K as Kafka
   participant DN as tracking / analytics / notification
 
   C->>GW: POST /dispatch/{shipmentId}/trigger · Bearer JWT
   GW->>DS: verify JWT · authorize · proxy
   DS->>DB: UPSERT dispatch_workflows (status=running, step=assign_courier)
-  alt Temporal reachable (preferred · async)
-    DS->>TW: workflow.start(DispatchWorkflow) — returns handle
+  alt Temporal reachable
+    DS->>TC: workflow.start(DispatchWorkflow, {workflowId, shipmentId})
     DS-->>C: { ok:true, workflowId, orchestrator:"temporal" }
-    Note over TW,DB: later, on the worker (one activity per step)
-    TW->>DB: advance step: validate → reserve → label → assign → init-tracking
-    TW->>DB: markDispatched → UPDATE (step=close, status=completed)
-    TW->>K: publishDispatchCompleted(shipmentId)
-  else Temporal unavailable (inline fallback · sync)
-    DS->>DB: runDispatchInline → same activity sequence
-    DS->>DB: markDispatched → UPDATE (step=close, status=completed)
-    DS->>K: publishDispatchCompleted(shipmentId)
-    DS-->>C: { ok:true, workflowId, orchestrator:"inline" }
+    TC->>TWS: schedule activities (one op each, direct Prisma/Kafka)
+    Note over TWS: validate → reserve → set status → assign courier → load → publish → complete
+    TWS->>K: publishDispatched(shipmentId)
+  else Temporal unavailable
+    DS-->>C: 503 temporal_unavailable
   end
   K-->>DN: shipment.dispatched · analytics.event · notification.trigger
 ```
@@ -929,7 +932,7 @@ sequenceDiagram
 **Backend services** (`apps/services/*`)
 - Fastify (with `@fastify/http-proxy`, `@fastify/cors`, `@fastify/rate-limit`)
 - Zod for validation, shared middleware (Pino logging, request IDs)
-- Temporal (dispatch workflows), BullMQ (notification jobs)
+- Temporal (dispatch SAGA in temporal-service; client in dispatch-service), BullMQ (notification jobs)
 - Vercel AI SDK (`ai`) + `@ai-sdk/groq` for the AI assistant and recommendations
 
 **Data & messaging**

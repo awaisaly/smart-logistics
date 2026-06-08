@@ -5,10 +5,9 @@ export type AuthUser = {
   id?: string;
   email: string;
   role: string;
-  // Human-readable role name and the pages this role may access — both come
-  // from the backend so RBAC is data-driven (no hardcoded frontend role map).
   label?: string;
   pages?: string[];
+  permissions?: string[];
   accessToken?: string;
   refreshToken?: string;
 };
@@ -87,7 +86,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): JSX.E
           error?: string;
           accessToken?: string;
           refreshToken?: string;
-          user?: { id?: string; email: string; role: string; label?: string; pages?: string[] };
+          user?: { id?: string; email: string; role: string; label?: string; pages?: string[]; permissions?: string[] };
         };
         if (!res.ok || data.ok === false || !data.accessToken || !data.user) {
           return { ok: false, error: data.error ?? "Invalid email or password" };
@@ -98,6 +97,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): JSX.E
           role: data.user.role,
           label: data.user.label,
           pages: data.user.pages,
+          permissions: data.user.permissions,
           accessToken: data.accessToken,
           refreshToken: data.refreshToken,
         };

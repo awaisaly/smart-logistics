@@ -11,22 +11,24 @@ datasource db {
 }
 
 model DispatchWorkflow {
-  id        String   @id
-  type      String
-  shipment  String
-  started   String
-  duration  String
-  status    String
-  step      String
-  retries   Int      @default(0)
-  error     String?
-  createdAt DateTime @default(now()) @map("created_at")
+  id               String   @id @default(uuid()) @db.Uuid
+  code             String   @unique
+  type             String
+  shipmentId       String   @map("shipment_id") @db.Uuid
+  shipmentTracking String   @map("shipment_tracking")
+  started          String
+  duration         String
+  status           String
+  step             String
+  retries          Int      @default(0)
+  error            String?
+  createdAt        DateTime @default(now()) @map("created_at")
 
   @@map("dispatch_workflows")
 }
 
 model DispatchFailureMode {
-  id        String   @id
+  id        String   @id @default(uuid()) @db.Uuid
   kind      String
   count     Int      @default(0)
   trend     String   @default("flat")
@@ -37,8 +39,8 @@ model DispatchFailureMode {
 }
 
 model DispatchWorkflowAudit {
-  id             Int      @id @default(autoincrement())
-  workflowId     String   @map("workflow_id")
+  id             String   @id @default(uuid()) @db.Uuid
+  workflowId     String   @map("workflow_id") @db.Uuid
   actor          String
   action         String
   reason         String?

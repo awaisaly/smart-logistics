@@ -4,6 +4,7 @@ import { useAuth } from "@/lib/auth";
 
 export function useCurrentUser(): {
   user: CurrentUser | null;
+  permissions: string[];
   userName: string;
   firstName: string;
   userInitials: string;
@@ -20,11 +21,10 @@ export function useCurrentUser(): {
 
   return {
     user,
+    permissions: authUser?.permissions ?? [],
     userName,
     firstName,
     userInitials: user ? deriveUserInitials(user.email) : "GU",
-    // Prefer the backend-provided role label (data-driven); fall back to a
-    // formatted version of the role key.
     userRoleLabel: user ? authUser?.label ?? formatRole(user.role) : "Not signed in",
     loading,
   };

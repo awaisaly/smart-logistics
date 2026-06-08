@@ -83,7 +83,7 @@ app.get("/shipments/histogram", async (request) => {
 app.get("/regions/volume", async (request) => {
   const { from, to } = rangeOf(request);
   const rows = await shipmentDb.$queryRaw<Array<{ name: string; volume: number }>>`
-    SELECT split_part("to", '-', 1) AS name, COUNT(*)::int AS volume
+    SELECT split_part(to_code, '-', 1) AS name, COUNT(*)::int AS volume
     FROM shipment_records
     WHERE created_at >= ${from} AND created_at <= ${to}
     GROUP BY name

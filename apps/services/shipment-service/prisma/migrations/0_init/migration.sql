@@ -3,13 +3,17 @@ CREATE SCHEMA IF NOT EXISTS "public";
 
 -- CreateTable
 CREATE TABLE "shipment_records" (
-    "id" TEXT NOT NULL,
-    "from" TEXT NOT NULL,
-    "to" TEXT NOT NULL,
+    "id" UUID NOT NULL,
+    "tracking_number" TEXT NOT NULL,
+    "from_warehouse_id" UUID NOT NULL,
+    "to_warehouse_id" UUID NOT NULL,
+    "from_code" TEXT NOT NULL,
+    "to_code" TEXT NOT NULL,
+    "courier_id" UUID NOT NULL,
+    "courier_code" TEXT NOT NULL,
     "weight" TEXT NOT NULL,
     "status" TEXT NOT NULL,
     "priority" TEXT NOT NULL,
-    "courier" TEXT NOT NULL,
     "placed" TEXT NOT NULL,
     "eta" TEXT NOT NULL,
     "risk" DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -22,8 +26,10 @@ CREATE TABLE "shipment_records" (
 
 -- CreateTable
 CREATE TABLE "shipment_returns" (
-    "id" TEXT NOT NULL,
-    "shipment" TEXT NOT NULL,
+    "id" UUID NOT NULL,
+    "code" TEXT NOT NULL,
+    "shipment_id" UUID NOT NULL,
+    "shipment_tracking" TEXT NOT NULL,
     "reason" TEXT NOT NULL,
     "initiated" TEXT NOT NULL,
     "stage" TEXT NOT NULL,
@@ -36,8 +42,10 @@ CREATE TABLE "shipment_returns" (
 
 -- CreateTable
 CREATE TABLE "shipment_exceptions" (
-    "id" TEXT NOT NULL,
-    "shipment" TEXT NOT NULL,
+    "id" UUID NOT NULL,
+    "code" TEXT NOT NULL,
+    "shipment_id" UUID NOT NULL,
+    "shipment_tracking" TEXT NOT NULL,
     "kind" TEXT NOT NULL,
     "severity" TEXT NOT NULL,
     "age" TEXT NOT NULL,
@@ -49,8 +57,8 @@ CREATE TABLE "shipment_exceptions" (
 
 -- CreateTable
 CREATE TABLE "shipment_timelines" (
-    "id" TEXT NOT NULL,
-    "shipment_id" TEXT NOT NULL,
+    "id" UUID NOT NULL,
+    "shipment_id" UUID NOT NULL,
     "t" TEXT NOT NULL,
     "label" TEXT NOT NULL,
     "descr" TEXT NOT NULL,
@@ -63,8 +71,8 @@ CREATE TABLE "shipment_timelines" (
 
 -- CreateTable
 CREATE TABLE "shipment_audits_v2" (
-    "id" TEXT NOT NULL,
-    "shipment_id" TEXT NOT NULL,
+    "id" UUID NOT NULL,
+    "shipment_id" UUID NOT NULL,
     "t" TEXT NOT NULL,
     "actor" TEXT NOT NULL,
     "action" TEXT NOT NULL,
@@ -73,4 +81,13 @@ CREATE TABLE "shipment_audits_v2" (
 
     CONSTRAINT "shipment_audits_v2_pkey" PRIMARY KEY ("id")
 );
+
+-- CreateIndex
+CREATE UNIQUE INDEX "shipment_records_tracking_number_key" ON "shipment_records"("tracking_number");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "shipment_returns_code_key" ON "shipment_returns"("code");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "shipment_exceptions_code_key" ON "shipment_exceptions"("code");
 

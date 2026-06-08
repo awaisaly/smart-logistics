@@ -12,6 +12,7 @@ type StoredAuth = {
   role?: string;
   label?: string;
   pages?: string[];
+  permissions?: string[];
   accessToken?: string;
   refreshToken?: string;
 };
@@ -62,7 +63,7 @@ async function refreshAccessToken(): Promise<string | null> {
       const data = (await res.json().catch(() => ({}))) as {
         accessToken?: string;
         refreshToken?: string;
-        user?: { id?: string; email?: string; role?: string; label?: string; pages?: string[] };
+        user?: { id?: string; email?: string; role?: string; label?: string; pages?: string[]; permissions?: string[] };
       };
       if (!res.ok || !data.accessToken) return null;
       writeAuth({
@@ -76,6 +77,7 @@ async function refreshAccessToken(): Promise<string | null> {
               role: data.user.role,
               label: data.user.label,
               pages: data.user.pages,
+              permissions: data.user.permissions,
             }
           : {}),
       });

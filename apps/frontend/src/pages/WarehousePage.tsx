@@ -164,7 +164,7 @@ export function WarehousePage(): JSX.Element {
                   }}
                 >
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span className="mono" style={{ fontSize: 11, opacity: 0.75 }}>{w.id}</span>
+                    <span className="mono" style={{ fontSize: 11, opacity: 0.75 }}>{String(w.code ?? w.id)}</span>
                     <PrototypePill tone={u > 90 ? "err" : u > 80 ? "warn" : "ok"} size="sm">{u}%</PrototypePill>
                   </div>
                   <div>
@@ -194,7 +194,7 @@ export function WarehousePage(): JSX.Element {
 
         <div className="sl-grid" data-cols={12} style={{ gap: 12 }}>
           <PageCard
-            title={`${selected.name} · ${selected.id}`}
+            title={`${selected.name} · ${String(selected.code ?? selected.id)}`}
             sub={`${selected.city} · ${selected.lanes} lanes · stock health`}
             action={<PrototypePill tone={utilPct > 90 ? "err" : utilPct > 80 ? "warn" : "ok"}>{utilPct}% utilization</PrototypePill>}
             style={{ gridColumn: "span 8" }}

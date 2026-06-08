@@ -91,7 +91,7 @@ export function CouriersPage(): JSX.Element {
   const activeCount = couriers.filter((c) => !offStates.has(String(c.status ?? "").toLowerCase())).length;
   const exceptionCount = couriers.filter((c) => String(c.status ?? "").toLowerCase() === "exception").length;
   const availableCount = couriers.filter((c) => String(c.status ?? "").toLowerCase() === "available").length;
-  const assigned = selected ? shipments.filter((s) => s.courier === selected.id).slice(0, 6) : [];
+  const assigned = selected ? shipments.filter((s) => s.courier_id === selected.id).slice(0, 6) : [];
 
   if (loading) {
     return (
@@ -144,7 +144,7 @@ export function CouriersPage(): JSX.Element {
             <CouriersMap couriers={liveOnMap} warehouses={[]} cityFilter={city} selectedId={selectedId} onSelect={setSelectedId} />
           </PageCard>
 
-          <PageCard title="Courier detail" sub={selected.id} style={{ gridColumn: "span 5" }} padding={16}>
+          <PageCard title="Courier detail" sub={String(selected.code ?? selected.id)} style={{ gridColumn: "span 5" }} padding={16}>
             <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 14 }}>
               <div style={{ width: 46, height: 46, borderRadius: 999, background: "var(--bg-warm)", display: "grid", placeItems: "center", fontSize: 16, fontWeight: 500, color: "var(--ink)", border: "0.5px solid var(--line)" }}>
                 {String(selected.name ?? "?").split(" ").map((s) => s[0]).join("").slice(0, 2)}
@@ -155,7 +155,7 @@ export function CouriersPage(): JSX.Element {
                   <StatusPill status={String(selected.status ?? "")} />
                 </div>
                 <div style={{ fontSize: 11, color: "var(--mute)" }}>
-                  <span className="mono">{selected.id}</span> · {String(selected.city ?? "")} · {String(selected.zone ?? "")} · since {String(selected.since ?? "")}
+                  <span className="mono">{String(selected.code ?? selected.id)}</span> · {String(selected.city ?? "")} · {String(selected.zone ?? "")} · since {String(selected.since ?? "")}
                 </div>
               </div>
             </div>
@@ -168,7 +168,7 @@ export function CouriersPage(): JSX.Element {
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               {assigned.map((s) => (
                 <div key={s.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 8px", borderRadius: 6, background: "var(--bg-warm)" }}>
-                  <span className="mono" style={{ fontSize: 11.5, color: "var(--info)" }}>{s.id}</span>
+                  <span className="mono" style={{ fontSize: 11.5, color: "var(--info)" }}>{String(s.tracking_number ?? s.id ?? "")}</span>
                   <span style={{ fontSize: 11, color: "var(--ink-2)", flex: 1, padding: "0 10px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{String(s.to ?? "")}</span>
                   <StatusPill status={String(s.status ?? "")} />
                 </div>
@@ -192,7 +192,7 @@ export function CouriersPage(): JSX.Element {
             onRowClick={(c) => setSelectedId(c.id)}
             rows={rows}
             columns={[
-              { key: "id", label: "ID", mono: true, render: (r) => <span style={{ color: "var(--info)" }}>{r.id}</span> },
+              { key: "code", label: "ID", mono: true, render: (r) => <span style={{ color: "var(--info)" }}>{String(r.code ?? r.id)}</span> },
               { key: "name", label: "Name", render: (r) => <span style={{ color: "var(--ink)", fontWeight: 500 }}>{String(r.name ?? "")}</span> },
               { key: "city", label: "City" },
               { key: "zone", label: "Zone" },

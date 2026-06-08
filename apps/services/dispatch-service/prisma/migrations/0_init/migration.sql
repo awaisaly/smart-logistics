@@ -3,9 +3,11 @@ CREATE SCHEMA IF NOT EXISTS "public";
 
 -- CreateTable
 CREATE TABLE "dispatch_workflows" (
-    "id" TEXT NOT NULL,
+    "id" UUID NOT NULL,
+    "code" TEXT NOT NULL,
     "type" TEXT NOT NULL,
-    "shipment" TEXT NOT NULL,
+    "shipment_id" UUID NOT NULL,
+    "shipment_tracking" TEXT NOT NULL,
     "started" TEXT NOT NULL,
     "duration" TEXT NOT NULL,
     "status" TEXT NOT NULL,
@@ -19,7 +21,7 @@ CREATE TABLE "dispatch_workflows" (
 
 -- CreateTable
 CREATE TABLE "dispatch_failure_modes" (
-    "id" TEXT NOT NULL,
+    "id" UUID NOT NULL,
     "kind" TEXT NOT NULL,
     "count" INTEGER NOT NULL DEFAULT 0,
     "trend" TEXT NOT NULL DEFAULT 'flat',
@@ -31,8 +33,8 @@ CREATE TABLE "dispatch_failure_modes" (
 
 -- CreateTable
 CREATE TABLE "dispatch_workflow_audit" (
-    "id" SERIAL NOT NULL,
-    "workflow_id" TEXT NOT NULL,
+    "id" UUID NOT NULL,
+    "workflow_id" UUID NOT NULL,
     "actor" TEXT NOT NULL,
     "action" TEXT NOT NULL,
     "reason" TEXT,
@@ -45,6 +47,9 @@ CREATE TABLE "dispatch_workflow_audit" (
 
     CONSTRAINT "dispatch_workflow_audit_pkey" PRIMARY KEY ("id")
 );
+
+-- CreateIndex
+CREATE UNIQUE INDEX "dispatch_workflows_code_key" ON "dispatch_workflows"("code");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "dispatch_workflow_audit_idempotency_key_key" ON "dispatch_workflow_audit"("idempotency_key");

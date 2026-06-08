@@ -1,12 +1,13 @@
 import jwt from "jsonwebtoken";
 
-// Short-lived signed access token. Claims are intentionally small: identity +
-// role, which the gateway verifies on every request to authorize by role.
+// Short-lived signed access token. Carries identity plus the role's permission list
+// resolved at login/refresh so the gateway can authorize without a DB lookup.
 export type AccessTokenClaims = {
   sub: string;
   email: string;
   role: string;
-  roleId?: number | null;
+  roleId?: string | null;
+  permissions?: string[];
 };
 
 const DEFAULT_EXPIRES_IN = process.env.JWT_ACCESS_TTL?.trim() || "15m";
@@ -21,8 +22,8 @@ export function signAccessToken(
   claims: AccessTokenClaims,
   options: { expiresIn?: string | number } = {}
 ): string {
-  const { sub, email, role, roleId } = claims;
-  return jwt.sign({ email, role, roleId: roleId ?? null }, secret(), {
+  const { sub, email, role, roleId, permissions } = claims;
+  return jwt.sign({ email, role, roleId: roleId ?? null, permissions: permissions ?? [] }, secret(), {
     subject: sub,
     expiresIn: options.expiresIn ?? DEFAULT_EXPIRES_IN
   } as jwt.SignOptions);
@@ -30,11 +31,13 @@ export function signAccessToken(
 
 export function verifyAccessToken(token: string): AccessTokenClaims {
   const decoded = jwt.verify(token, secret()) as jwt.JwtPayload;
+  const rawPerms = decoded.permissions;
   return {
     sub: String(decoded.sub ?? ""),
     email: String(decoded.email ?? ""),
     role: String(decoded.role ?? ""),
-    roleId: typeof decoded.roleId === "number" ? decoded.roleId : null
+    roleId: typeof decoded.roleId === "string" ? decoded.roleId : null,
+    permissions: Array.isArray(rawPerms) ? rawPerms.map(String) : []
   };
 }
 

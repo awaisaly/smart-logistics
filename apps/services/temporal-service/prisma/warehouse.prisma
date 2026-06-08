@@ -1,0 +1,23 @@
+generator warehouseClient {
+  provider = "prisma-client-js"
+  output   = "../src/generated/warehouse"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("WAREHOUSE_DATABASE_URL")
+}
+
+model WarehouseStockItem {
+  id             String   @id @default(uuid()) @db.Uuid
+  warehouseId    String   @map("warehouse_id") @db.Uuid
+  sku            String
+  name           String
+  onHand         Int      @default(0) @map("on_hand")
+  reserved       Int      @default(0)
+  thresholdValue Int      @default(0) @map("threshold_value")
+  hot            Boolean  @default(false)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@map("warehouse_stock_items")
+}

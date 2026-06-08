@@ -13,31 +13,37 @@ datasource db {
 }
 
 model ShipmentRecord {
-  id             String   @id
-  from           String
-  to             String
-  weight         String
-  status         String
-  priority       String
-  courier        String
-  placed         String
-  eta            String
-  risk           Float    @default(0)
-  items          Int      @default(1)
-  transitMinutes Int      @default(0) @map("transit_minutes")
-  createdAt      DateTime @default(now()) @map("created_at")
+  id               String   @id @default(uuid()) @db.Uuid
+  trackingNumber   String   @unique @map("tracking_number")
+  fromWarehouseId  String   @map("from_warehouse_id") @db.Uuid
+  toWarehouseId    String   @map("to_warehouse_id") @db.Uuid
+  fromCode         String   @map("from_code")
+  toCode           String   @map("to_code")
+  courierId        String   @map("courier_id") @db.Uuid
+  courierCode      String   @map("courier_code")
+  weight           String
+  status           String
+  priority         String
+  placed           String
+  eta              String
+  risk             Float    @default(0)
+  items            Int      @default(1)
+  transitMinutes   Int      @default(0) @map("transit_minutes")
+  createdAt        DateTime @default(now()) @map("created_at")
 
   @@map("shipment_records")
 }
 
 model ShipmentException {
-  id        String   @id
-  shipment  String
-  kind      String
-  severity  String
-  age       String
-  ownerName String   @map("owner_name")
-  createdAt DateTime @default(now()) @map("created_at")
+  id               String   @id @default(uuid()) @db.Uuid
+  code             String   @unique
+  shipmentId       String   @map("shipment_id") @db.Uuid
+  shipmentTracking String   @map("shipment_tracking")
+  kind             String
+  severity         String
+  age              String
+  ownerName        String   @map("owner_name")
+  createdAt        DateTime @default(now()) @map("created_at")
 
   @@map("shipment_exceptions")
 }

@@ -1,5 +1,7 @@
 import React from "react";
 import { deleteJson, fetchJson, postJson, streamSse } from "@/lib/api";
+import { canPerform, PERMISSIONS } from "@/lib/permissions";
+import { useAuth } from "@/lib/auth";
 import { toNumber } from "@/lib/format";
 import { suggestionKindColor } from "@/lib/ai-context";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
@@ -37,6 +39,8 @@ const formatRelativeTime = (iso?: string | null): string => {
 };
 
 export function AiPage(): JSX.Element {
+  const { user: authUser } = useAuth();
+  const canUseAi = canPerform(authUser?.permissions, PERMISSIONS.AI_USE);
   const [messages, setMessages] = React.useState<AiChatMsg[]>([]);
   const [input, setInput] = React.useState("");
   const [streaming, setStreaming] = React.useState(false);
@@ -112,7 +116,7 @@ export function AiPage(): JSX.Element {
 
   const send = (text?: string): void => {
     const value = (text ?? input).trim();
-    if (!value || streaming) return;
+    if (!value || streaming || !canUseAi) return;
     setMessages((m) => [...m, { role: "user", text: value }]);
     setInput("");
     setStreaming(true);
@@ -387,7 +391,7 @@ export function AiPage(): JSX.Element {
           <PageCard
             title="Live recommendations"
             sub={meta.mode ? `${meta.mode === "groq" ? "Groq-ranked" : meta.mode === "rules" ? "Rules-based" : "Seed"} · updated ${formatRelativeTime(meta.generatedAt)}` : "proactive · acceptance tracked"}
-            action={(
+            action={canUseAi ? (
               <button
                 type="button"
                 onClick={refreshSuggestions}
@@ -404,7 +408,7 @@ export function AiPage(): JSX.Element {
               >
                 {refreshing ? "Refreshing…" : "Refresh"}
               </button>
-            )}
+            ) : undefined}
             padding={0}
             bodyStyle={{ padding: 0 }}
           >

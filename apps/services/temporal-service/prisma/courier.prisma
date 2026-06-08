@@ -1,0 +1,28 @@
+generator courierClient {
+  provider = "prisma-client-js"
+  output   = "../src/generated/courier"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("COURIER_DATABASE_URL")
+}
+
+model CourierRecord {
+  id        String   @id @default(uuid()) @db.Uuid
+  code      String   @unique
+  userId    String   @map("user_id") @db.Uuid
+  name      String
+  city      String   @default("Karachi")
+  zone      String   @default("Unassigned")
+  status    String   @default("available")
+  load      Int      @default(0)
+  capacity  Int      @default(10)
+  rating    Float    @default(5)
+  since     String   @default("2026")
+  attempts  Int      @default(0)
+  delivered Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("courier_records")
+}

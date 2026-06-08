@@ -11,7 +11,7 @@ datasource db {
 }
 
 model AiSession {
-  id        String   @id @db.Uuid
+  id        String   @id @default(uuid()) @db.Uuid
   userId    String?  @map("user_id") @db.Uuid
   startedAt DateTime @default(now()) @map("started_at")
 
@@ -19,7 +19,7 @@ model AiSession {
 }
 
 model AiMessage {
-  id        String   @id @db.Uuid
+  id        String   @id @default(uuid()) @db.Uuid
   sessionId String   @map("session_id") @db.Uuid
   role      String
   content   String

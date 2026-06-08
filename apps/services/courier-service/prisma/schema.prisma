@@ -11,8 +11,9 @@ datasource db {
 }
 
 model CourierRecord {
-  id        String   @id
-  userId    String   @map("user_id")
+  id        String   @id @default(uuid()) @db.Uuid
+  code      String   @unique
+  userId    String   @map("user_id") @db.Uuid
   name      String
   city      String   @default("Karachi")
   zone      String   @default("Unassigned")

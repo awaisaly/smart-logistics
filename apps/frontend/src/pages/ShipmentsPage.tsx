@@ -1,5 +1,6 @@
 import React from "react";
 import { fetchJson, postJson, withRange } from "@/lib/api";
+import { canPerform, PERMISSIONS } from "@/lib/permissions";
 import { toNumber, formatCompact, formatDateTime, formatTime } from "@/lib/format";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
 import { useDateRange } from "@/lib/date-range";
@@ -30,12 +31,14 @@ import {
 
 export type ShipmentRow = {
   id: string;
+  tracking_number?: string;
   from?: string;
   to?: string;
   weight?: string;
   status?: string;
   priority?: string;
   courier?: string;
+  courier_id?: string;
   placed?: string;
   eta?: string;
   risk?: number;
@@ -65,6 +68,10 @@ function formatAuditTime(value?: string): string {
 const ACTIVE_STATUSES = new Set(["created", "dispatched", "in_transit", "in-transit", "picked", "out_for_delivery", "out-for-delivery", "attempted"]);
 const ISSUE_STATUSES = new Set(["exception", "attempted", "failed", "returned"]);
 
+function shipmentLabel(s: ShipmentRow): string {
+  return String(s.tracking_number ?? s.id ?? "");
+}
+
 export function priorityTone(p?: string): PillTone {
   const v = String(p ?? "").toLowerCase();
   if (v === "express") return "accent";
@@ -74,7 +81,8 @@ export function priorityTone(p?: string): PillTone {
 }
 
 export function ShipmentsPage(): JSX.Element {
-  const { user } = useCurrentUser();
+  const { user, permissions } = useCurrentUser();
+  const canWriteShipments = canPerform(permissions, PERMISSIONS.SHIPMENTS_WRITE);
   const actor = user?.email ? `ops:${user.email.split("@")[0]}` : "ops:console";
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
@@ -160,7 +168,7 @@ export function ShipmentsPage(): JSX.Element {
       if (filter === "delivered" && status !== "delivered") return false;
       if (search) {
         const q = search.toLowerCase();
-        const haystack = `${s.id} ${s.to ?? ""} ${s.from ?? ""} ${s.courier ?? ""}`.toLowerCase();
+        const haystack = `${s.tracking_number ?? ""} ${s.id} ${s.to ?? ""} ${s.from ?? ""} ${s.courier ?? ""}`.toLowerCase();
         if (!haystack.includes(q)) return false;
       }
       return true;
@@ -268,7 +276,7 @@ export function ShipmentsPage(): JSX.Element {
                     label: "Shipment",
                     mono: true,
                     render: (r) => (
-                      <span style={{ color: "var(--info)", fontWeight: 500 }}>{r.id}</span>
+                      <span style={{ color: "var(--info)", fontWeight: 500 }}>{shipmentLabel(r)}</span>
                     ),
                   },
                   { key: "from", label: "Origin", mono: true },
@@ -343,6 +351,7 @@ export function ShipmentsPage(): JSX.Element {
               audit={audit}
               loading={detailLoading}
               actor={actor}
+              canWrite={canWriteShipments}
               onRefresh={reloadDetail}
             />
           )}
@@ -401,6 +410,7 @@ export function ShipmentDetail({
   audit,
   loading,
   actor,
+  canWrite,
   onRefresh,
 }: {
   shipment: ShipmentRow;
@@ -408,6 +418,7 @@ export function ShipmentDetail({
   audit: ShipmentAuditRow[];
   loading: boolean;
   actor: string;
+  canWrite: boolean;
   onRefresh: () => void;
 }): JSX.Element {
   const auditRef = React.useRef<HTMLDivElement | null>(null);
@@ -480,7 +491,7 @@ export function ShipmentDetail({
           <div style={{ minWidth: 0 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
               <span className="mono" style={{ fontSize: 13, color: "var(--info)", fontWeight: 600 }}>
-                {shipment.id}
+                {shipmentLabel(shipment)}
               </span>
               <StatusPill status={String(shipment.status ?? "")} />
               <PrototypePill tone={priorityTone(shipment.priority)} size="sm">
@@ -498,40 +509,44 @@ export function ShipmentDetail({
             <button type="button" className={btnClass} onClick={scrollToAudit} disabled={Boolean(pending)}>
               Audit log
             </button>
-            <button type="button" className={btnClass} onClick={handleEscalate} disabled={Boolean(pending)}>
-              {pending === "escalate" ? "Escalating…" : "Escalate"}
-            </button>
-            <div ref={menuRef} style={{ position: "relative" }}>
-              <button
-                type="button"
-                className={primaryBtnClass}
-                onClick={() => setMenuOpen((v) => !v)}
-                disabled={Boolean(pending)}
-                aria-expanded={menuOpen}
-                aria-haspopup="menu"
-              >
-                Actions ▾
-              </button>
-              {menuOpen && (
-                <div
-                  role="menu"
-                  className="absolute right-0 top-[calc(100%+4px)] z-20 min-w-[180px] rounded-md border border-line-strong bg-surface shadow-md py-1"
-                >
-                  {SHIPMENT_ACTIONS.map((action) => (
-                    <button
-                      key={action.id}
-                      type="button"
-                      role="menuitem"
-                      className="block w-full text-left px-3 py-2 text-[11.5px] text-ink-2 hover:bg-bg-warm disabled:opacity-50"
-                      onClick={() => runAction(action.id)}
-                      disabled={pending === action.id}
+            {canWrite && (
+              <>
+                <button type="button" className={btnClass} onClick={handleEscalate} disabled={Boolean(pending)}>
+                  {pending === "escalate" ? "Escalating…" : "Escalate"}
+                </button>
+                <div ref={menuRef} style={{ position: "relative" }}>
+                  <button
+                    type="button"
+                    className={primaryBtnClass}
+                    onClick={() => setMenuOpen((v) => !v)}
+                    disabled={Boolean(pending)}
+                    aria-expanded={menuOpen}
+                    aria-haspopup="menu"
+                  >
+                    Actions ▾
+                  </button>
+                  {menuOpen && (
+                    <div
+                      role="menu"
+                      className="absolute right-0 top-[calc(100%+4px)] z-20 min-w-[180px] rounded-md border border-line-strong bg-surface shadow-md py-1"
                     >
-                      {pending === action.id ? `${action.label}…` : action.label}
-                    </button>
-                  ))}
+                      {SHIPMENT_ACTIONS.map((action) => (
+                        <button
+                          key={action.id}
+                          type="button"
+                          role="menuitem"
+                          className="block w-full text-left px-3 py-2 text-[11.5px] text-ink-2 hover:bg-bg-warm disabled:opacity-50"
+                          onClick={() => runAction(action.id)}
+                          disabled={pending === action.id}
+                        >
+                          {pending === action.id ? `${action.label}…` : action.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
+              </>
+            )}
           </div>
         </div>
         {notice && (
@@ -556,12 +571,12 @@ export function ShipmentDetail({
 
       <div className="sl-detail-cards">
         <PageCard title="Recipient & contents" padding={12}>
-          <FieldRow label="Recipient">{`Recipient of ${shipment.id}`}</FieldRow>
+          <FieldRow label="Recipient">{`Recipient of ${shipmentLabel(shipment)}`}</FieldRow>
           <FieldRow label="Address">{String(shipment.to ?? "—")}</FieldRow>
           <FieldRow label="Items">{items}</FieldRow>
           <FieldRow label="Weight">{String(shipment.weight ?? "—")}</FieldRow>
           <FieldRow label="Idempotency key">
-            <span className="mono">k_{shipment.id.replace(/\W/g, "").toLowerCase().slice(-8)}</span>
+            <span className="mono">k_{shipmentLabel(shipment).replace(/\W/g, "").toLowerCase().slice(-8)}</span>
           </FieldRow>
         </PageCard>
         <PageCard title="Routing" padding={12}>

@@ -1,5 +1,4 @@
-// user-service data model. Tables are mapped to their existing snake_case names
-// so the schema can be pushed onto the already-seeded database without renames.
+// user-service data model. Tables are mapped to their existing snake_case names.
 
 generator client {
   provider = "prisma-client-js"
@@ -12,14 +11,17 @@ datasource db {
 }
 
 model Role {
-  id          Int      @id @default(autoincrement())
-  key         String   @unique
+  id          String   @id @default(uuid()) @db.Uuid
   label       String
   description String?
   // page ids the role can see in the frontend nav/routes
   pages       Json     @default("[]")
-  // gateway path prefixes the role is allowed to call
+  // gateway path prefixes the role is allowed to call (legacy coarse routing)
   apiPrefixes Json     @default("[]") @map("api_prefixes")
+  // granular portal/API permissions, e.g. "shipments:write", "users:read"
+  permissions Json     @default("[]")
+  // built-in roles (seeded) cannot be deleted; authorization uses permissions instead
+  isSystem    Boolean  @default(false) @map("is_system")
   createdAt   DateTime @default(now()) @map("created_at")
 
   users User[]
@@ -28,12 +30,12 @@ model Role {
 }
 
 model User {
-  id           String    @id
+  id           String    @id @default(uuid()) @db.Uuid
   email        String    @unique
   passwordHash String    @map("password_hash")
-  // Denormalized role key (= Role.key) kept for backward-compatible responses.
+  // Denormalized role label kept for backward-compatible API responses.
   role         String
-  roleId       Int?      @map("role_id")
+  roleId       String?   @map("role_id") @db.Uuid
   fullName     String?   @map("full_name")
   phone        String?
   employeeId   String?   @map("employee_id")
@@ -42,33 +44,21 @@ model User {
   lastLoginAt  DateTime? @map("last_login_at")
   createdAt    DateTime  @default(now()) @map("created_at")
 
-  roleRef      Role?         @relation(fields: [roleId], references: [id])
-  adminProfile AdminProfile?
+  roleRef Role? @relation(fields: [roleId], references: [id])
 
-  @@map("users_v2")
-}
-
-model AdminProfile {
-  userId        String   @id @map("user_id")
-  accessLevel   String   @default("standard") @map("access_level")
-  managedRegions Json    @default("[]") @map("managed_regions")
-  canManageUsers Boolean @default(false) @map("can_manage_users")
-  notes         String?
-  createdAt     DateTime @default(now()) @map("created_at")
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@map("admin_profiles")
+  @@map("users")
 }
 
 model AuthToken {
-  id        String   @id
-  userId    String   @map("user_id")
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
   kind      String
   token     String
+  expiresAt DateTime @map("expires_at")
   createdAt DateTime @default(now()) @map("created_at")
 
   @@index([token])
   @@index([userId])
+  @@index([expiresAt])
   @@map("auth_tokens")
 }

@@ -27,8 +27,8 @@ import {
   type PillTone,
 } from "@/components";
 
-export type ExceptionRow = { id?: string; shipment?: string; kind?: string; severity?: string; age?: string; owner?: string };
-export type ReturnRow = { id?: string; shipment?: string; reason?: string; initiated?: string; stage?: string; customer?: string; refund?: string };
+export type ExceptionRow = { id?: string; code?: string; shipment?: string; kind?: string; severity?: string; age?: string; owner?: string };
+export type ReturnRow = { id?: string; code?: string; shipment?: string; reason?: string; initiated?: string; stage?: string; customer?: string; refund?: string };
 export type TaxonomyRow = { kind?: string; n?: number; pct?: number; tone?: string };
 
 export function ReturnsPage(): JSX.Element {
@@ -104,7 +104,7 @@ export function ReturnsPage(): JSX.Element {
                     rows={exceptions}
                     columns={[
                       { key: "severity", label: "Severity", render: (r) => <PrototypePill tone={r.severity === "high" ? "err" : r.severity === "medium" ? "warn" : "neutral"}>{String(r.severity ?? "")}</PrototypePill> },
-                      { key: "id", label: "ID", mono: true, render: (r) => <span style={{ color: "var(--info)" }}>{String(r.id ?? "")}</span> },
+                      { key: "code", label: "ID", mono: true, render: (r) => <span style={{ color: "var(--info)" }}>{String(r.code ?? r.id ?? "")}</span> },
                       { key: "kind", label: "Kind", mono: true, render: (r) => <span style={{ color: "var(--err)" }}>{String(r.kind ?? "")}</span> },
                       { key: "shipment", label: "Shipment", mono: true },
                       { key: "owner", label: "Owner", mono: true, render: (r) => <span style={{ color: "var(--mute)" }}>{String(r.owner ?? "")}</span> },
@@ -134,7 +134,7 @@ export function ReturnsPage(): JSX.Element {
                 <Table<ReturnRow>
                   rows={returns}
                   columns={[
-                    { key: "id", label: "RMA", mono: true, render: (r) => <span style={{ color: "var(--info)" }}>{String(r.id ?? "")}</span> },
+                    { key: "code", label: "RMA", mono: true, render: (r) => <span style={{ color: "var(--info)" }}>{String(r.code ?? r.id ?? "")}</span> },
                     { key: "shipment", label: "Shipment", mono: true },
                     { key: "customer", label: "Customer", render: (r) => <span style={{ color: "var(--ink)" }}>{String(r.customer ?? "")}</span> },
                     { key: "reason", label: "Reason" },

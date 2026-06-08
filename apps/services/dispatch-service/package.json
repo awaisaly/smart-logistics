@@ -14,13 +14,10 @@
   },
   "dependencies": {
     "@prisma/client": "^6.16.0",
-    "@smartlogistics/shared-events": "workspace:*",
+    "@smartlogistics/shared-types": "workspace:*",
     "@smartlogistics/shared-middleware": "workspace:*",
     "@temporalio/client": "^1.11.5",
-    "@temporalio/worker": "^1.11.5",
-    "@temporalio/workflow": "^1.11.5",
-    "fastify": "^4.28.1",
-    "kafkajs": "^2.2.4"
+    "fastify": "^4.28.1"
   },
   "devDependencies": {
     "prisma": "^6.16.0",

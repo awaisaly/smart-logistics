@@ -361,9 +361,25 @@ services:
     depends_on:
       postgres-dispatch: { condition: service_healthy }
       temporal: { condition: service_healthy }
-      kafka: { condition: service_healthy }
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:4005/health >/dev/null || exit 1"]
+      <<: *health_http
+
+  temporal-service:
+    profiles: ["services"]
+    build: ./apps/services/temporal-service
+    restart: unless-stopped
+    env_file: .env
+    ports: ["4011:4011"]
+    depends_on:
+      postgres-shipment: { condition: service_healthy }
+      postgres-warehouse: { condition: service_healthy }
+      postgres-courier: { condition: service_healthy }
+      postgres-dispatch: { condition: service_healthy }
+      temporal: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:4011/health >/dev/null || exit 1"]
       <<: *health_http
 
   tracking-service:

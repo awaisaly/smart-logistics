@@ -3,8 +3,8 @@ CREATE SCHEMA IF NOT EXISTS "public";
 
 -- CreateTable
 CREATE TABLE "notification_log_v2" (
-    "id" TEXT NOT NULL,
-    "event_id" TEXT NOT NULL,
+    "id" UUID NOT NULL,
+    "event_id" UUID NOT NULL,
     "channel" TEXT NOT NULL,
     "recipient" TEXT NOT NULL,
     "status" TEXT NOT NULL,

@@ -1,8 +1,18 @@
 import { describe, expect, it, beforeAll } from "vitest";
-import { buildPolicy, isAuthorized, isPublic } from "../apps/services/api-gateway/src/authz";
-import { ROLE_DEFS, signAccessToken, verifyAccessToken } from "../packages/shared-middleware/src/index";
+import { isAuthorized, isPublic } from "../apps/services/api-gateway/src/authz";
+import { ALL_PERMISSIONS, PERMISSIONS } from "../packages/shared-types/src/permissions";
+import { signAccessToken, verifyAccessToken } from "../packages/shared-middleware/src/index";
 
-const policy = buildPolicy(ROLE_DEFS);
+const ADMIN_PERMS = [...ALL_PERMISSIONS];
+
+const WAREHOUSE_PERMS = [
+  PERMISSIONS.SHIPMENTS_READ,
+  PERMISSIONS.SHIPMENTS_WRITE,
+  PERMISSIONS.DISPATCH_READ,
+  PERMISSIONS.TRACKING_READ
+];
+
+const COURIER_PERMS = [PERMISSIONS.SHIPMENTS_READ, PERMISSIONS.COURIERS_READ, PERMISSIONS.AI_USE];
 
 describe("gateway public allowlist", () => {
   it("treats auth + health/metrics endpoints as public", () => {
@@ -18,43 +28,50 @@ describe("gateway public allowlist", () => {
   });
 });
 
-describe("gateway prefix authorization", () => {
-  it("lets admins reach user administration and every service prefix", () => {
-    expect(isAuthorized(policy, "admin", "/users")).toBe(true);
-    expect(isAuthorized(policy, "admin", "/users/abc")).toBe(true);
-    expect(isAuthorized(policy, "admin", "/shipments")).toBe(true);
-    expect(isAuthorized(policy, "admin", "/notifications")).toBe(true);
+describe("gateway permission authorization", () => {
+  it("lets admins reach user/role administration and service APIs", () => {
+    expect(isAuthorized(ADMIN_PERMS, "/users", "GET")).toBe(true);
+    expect(isAuthorized(ADMIN_PERMS, "/users/abc", "PATCH")).toBe(true);
+    expect(isAuthorized(ADMIN_PERMS, "/roles", "GET")).toBe(true);
+    expect(isAuthorized(ADMIN_PERMS, "/roles", "POST")).toBe(true);
+    expect(isAuthorized(ADMIN_PERMS, "/shipments", "GET")).toBe(true);
+    expect(isAuthorized(ADMIN_PERMS, "/notifications", "GET")).toBe(true);
   });
 
-  it("denies non-admins access to user administration", () => {
-    expect(isAuthorized(policy, "courier", "/users")).toBe(false);
-    expect(isAuthorized(policy, "warehouse_operator", "/users")).toBe(false);
+  it("denies non-admins access to user and role administration", () => {
+    expect(isAuthorized(COURIER_PERMS, "/users", "GET")).toBe(false);
+    expect(isAuthorized(WAREHOUSE_PERMS, "/users", "GET")).toBe(false);
+    expect(isAuthorized(COURIER_PERMS, "/roles", "GET")).toBe(false);
   });
 
-  it("only admins may create accounts", () => {
-    expect(isAuthorized(policy, "admin", "/auth/register")).toBe(true);
-    expect(isAuthorized(policy, "courier", "/auth/register")).toBe(false);
+  it("only callers with users:write may register accounts", () => {
+    expect(isAuthorized(ADMIN_PERMS, "/auth/register", "POST")).toBe(true);
+    expect(isAuthorized(COURIER_PERMS, "/auth/register", "POST")).toBe(false);
   });
 
   it("allows any authenticated role to read its own profile", () => {
-    for (const role of ROLE_DEFS.map((r) => r.key)) {
-      expect(isAuthorized(policy, role, "/auth/me")).toBe(true);
+    for (const perms of [ADMIN_PERMS, COURIER_PERMS, WAREHOUSE_PERMS]) {
+      expect(isAuthorized(perms, "/auth/me", "GET")).toBe(true);
     }
   });
 
-  it("authorizes shared read prefixes for non-admin roles", () => {
-    expect(isAuthorized(policy, "courier", "/shipments/SL-1")).toBe(true);
-    expect(isAuthorized(policy, "warehouse_operator", "/tracking/events/recent")).toBe(true);
+  it("authorizes read prefixes when the matching read permission is granted", () => {
+    expect(isAuthorized(COURIER_PERMS, "/shipments/SL-1", "GET")).toBe(true);
+    expect(isAuthorized(WAREHOUSE_PERMS, "/tracking/events/recent", "GET")).toBe(true);
   });
 
-  it("denies prefixes outside a role's policy", () => {
-    expect(isAuthorized(policy, "courier", "/notifications")).toBe(false);
-    expect(isAuthorized(policy, "courier", "/totally-unknown")).toBe(false);
+  it("requires write permission for mutating requests", () => {
+    expect(isAuthorized(COURIER_PERMS, "/shipments/SL-1", "POST")).toBe(false);
+    expect(isAuthorized(ADMIN_PERMS, "/shipments/SL-1", "POST")).toBe(true);
   });
 
-  it("denies unknown roles everything except authenticated /auth", () => {
-    expect(isAuthorized(policy, "ghost", "/shipments")).toBe(false);
-    expect(isAuthorized(policy, "ghost", "/auth/me")).toBe(true);
+  it("denies routes outside the permission map", () => {
+    expect(isAuthorized(COURIER_PERMS, "/totally-unknown", "GET")).toBe(false);
+  });
+
+  it("denies empty permission lists", () => {
+    expect(isAuthorized([], "/shipments", "GET")).toBe(false);
+    expect(isAuthorized([], "/auth/me", "GET")).toBe(true);
   });
 });
 
@@ -63,13 +80,20 @@ describe("access token sign/verify", () => {
     process.env.JWT_ACCESS_SECRET = "test-secret-for-gateway-authz";
   });
 
-  it("round-trips claims through a signed JWT", () => {
-    const token = signAccessToken({ sub: "u1", email: "a@b.c", role: "admin", roleId: 1 });
+  it("round-trips claims including permissions through a signed JWT", () => {
+    const token = signAccessToken({
+      sub: "u1",
+      email: "a@b.c",
+      role: "Administrator",
+      roleId: "10000000-0000-4000-8000-000000000001",
+      permissions: [PERMISSIONS.USERS_WRITE, PERMISSIONS.SHIPMENTS_READ]
+    });
     const claims = verifyAccessToken(token);
     expect(claims.sub).toBe("u1");
     expect(claims.email).toBe("a@b.c");
-    expect(claims.role).toBe("admin");
-    expect(claims.roleId).toBe(1);
+    expect(claims.role).toBe("Administrator");
+    expect(claims.roleId).toBe("10000000-0000-4000-8000-000000000001");
+    expect(claims.permissions).toEqual([PERMISSIONS.USERS_WRITE, PERMISSIONS.SHIPMENTS_READ]);
   });
 
   it("rejects a tampered token", () => {

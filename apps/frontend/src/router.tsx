@@ -135,11 +135,18 @@ function buildSearchHits(index: SearchIndex, query: string): SearchHit[] {
   const hits: SearchHit[] = [];
 
   for (const row of index.shipments) {
-    if (matches(row.id, q) || matches(row.to, q) || matches(row.from, q) || matches(row.courier, q) || matches(row.status, q)) {
+    if (
+      matches(row.tracking_number, q) ||
+      matches(row.id, q) ||
+      matches(row.to, q) ||
+      matches(row.from, q) ||
+      matches(row.courier, q) ||
+      matches(row.status, q)
+    ) {
       hits.push({
         category: "Shipments",
         id: String(row.id ?? ""),
-        title: String(row.id ?? "Shipment"),
+        title: String(row.tracking_number ?? row.id ?? "Shipment"),
         subtitle: `${row.from ?? "?"} → ${row.to ?? "?"} · ${row.status ?? "unknown"}`,
         to: "/shipments",
         icon: "package",
@@ -147,11 +154,11 @@ function buildSearchHits(index: SearchIndex, query: string): SearchHit[] {
     }
   }
   for (const row of index.returns) {
-    if (matches(row.id, q) || matches(row.shipment, q) || matches(row.customer, q) || matches(row.reason, q)) {
+    if (matches(row.code, q) || matches(row.id, q) || matches(row.shipment, q) || matches(row.customer, q) || matches(row.reason, q)) {
       hits.push({
         category: "Returns",
         id: String(row.id ?? ""),
-        title: String(row.id ?? "Return"),
+        title: String(row.code ?? row.id ?? "Return"),
         subtitle: `${row.shipment ?? "?"} · ${row.reason ?? "?"}`,
         to: "/returns",
         icon: "rotate",
@@ -159,11 +166,11 @@ function buildSearchHits(index: SearchIndex, query: string): SearchHit[] {
     }
   }
   for (const row of index.exceptions) {
-    if (matches(row.id, q) || matches(row.shipment, q) || matches(row.kind, q) || matches(row.owner, q)) {
+    if (matches(row.code, q) || matches(row.id, q) || matches(row.shipment, q) || matches(row.kind, q) || matches(row.owner, q)) {
       hits.push({
         category: "Exceptions",
         id: String(row.id ?? ""),
-        title: String(row.kind ?? "Exception"),
+        title: String(row.code ?? row.kind ?? "Exception"),
         subtitle: `${row.shipment ?? "?"} · ${row.severity ?? "?"} · ${row.owner ?? "?"}`,
         to: "/returns",
         icon: "rotate",
@@ -171,11 +178,11 @@ function buildSearchHits(index: SearchIndex, query: string): SearchHit[] {
     }
   }
   for (const row of index.couriers) {
-    if (matches(row.id, q) || matches(row.name, q) || matches(row.city, q) || matches(row.zone, q) || matches(row.status, q)) {
+    if (matches(row.code, q) || matches(row.id, q) || matches(row.name, q) || matches(row.city, q) || matches(row.zone, q) || matches(row.status, q)) {
       hits.push({
         category: "Couriers",
         id: String(row.id ?? ""),
-        title: `${row.name ?? "Courier"} (${row.id ?? "?"})`,
+        title: `${row.name ?? "Courier"} (${row.code ?? row.id ?? "?"})`,
         subtitle: `${row.city ?? "?"} · ${row.zone ?? "?"} · ${row.status ?? "?"}`,
         to: "/couriers",
         icon: "courier",
@@ -183,11 +190,11 @@ function buildSearchHits(index: SearchIndex, query: string): SearchHit[] {
     }
   }
   for (const row of index.warehouses) {
-    if (matches(row.id, q) || matches(row.name, q) || matches(row.city, q)) {
+    if (matches(row.code, q) || matches(row.id, q) || matches(row.name, q) || matches(row.city, q)) {
       hits.push({
         category: "Warehouses",
         id: String(row.id ?? ""),
-        title: `${row.name ?? "Warehouse"} (${row.id ?? "?"})`,
+        title: `${row.name ?? "Warehouse"} (${row.code ?? row.id ?? "?"})`,
         subtitle: `${row.city ?? "?"} · ${row.lanes ?? "?"} lanes`,
         to: "/warehouses",
         icon: "warehouse",
@@ -195,11 +202,11 @@ function buildSearchHits(index: SearchIndex, query: string): SearchHit[] {
     }
   }
   for (const row of index.workflows) {
-    if (matches(row.id, q) || matches(row.shipment, q) || matches(row.type, q) || matches(row.status, q) || matches(row.step, q)) {
+    if (matches(row.code, q) || matches(row.id, q) || matches(row.shipment, q) || matches(row.type, q) || matches(row.status, q) || matches(row.step, q)) {
       hits.push({
         category: "Workflows",
         id: String(row.id ?? ""),
-        title: String(row.id ?? "Workflow"),
+        title: String(row.code ?? row.id ?? "Workflow"),
         subtitle: `${row.shipment ?? "?"} · ${row.status ?? "?"} · ${row.step ?? "?"}`,
         to: "/dispatch",
         icon: "workflow",

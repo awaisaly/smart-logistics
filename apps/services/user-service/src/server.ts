@@ -18,10 +18,9 @@ import {
   hashPassword,
   verifyPassword,
   newOpaqueToken,
-  hashToken,
-  ROLE_DEFS,
-  ROLE_BY_KEY
+  hashToken
 } from "@smartlogistics/shared-middleware";
+import { ALL_PERMISSIONS, type Permission } from "@smartlogistics/shared-types";
 import { prisma } from "./db.js";
 import { Prisma } from "./generated/prisma/index.js";
 
@@ -37,6 +36,9 @@ const ALLOW_DEMO_PASSWORD = process.env.NODE_ENV !== "production";
 
 // Access tokens are short-lived JWTs; refresh tokens are opaque rows we can revoke.
 const REFRESH_TTL_DAYS = Number(process.env.REFRESH_TOKEN_TTL_DAYS ?? 30);
+const REFRESH_TTL_MS = REFRESH_TTL_DAYS * 24 * 60 * 60 * 1000;
+
+const refreshExpiresAt = (): Date => new Date(Date.now() + REFRESH_TTL_MS);
 
 // Stable primary admin used by the operations console.
 const PRIMARY_ADMIN = {
@@ -45,70 +47,40 @@ const PRIMARY_ADMIN = {
   fullName: "Awais Ali"
 } as const;
 
-// ── role config in memory (seeded into the roles table on startup) ──────────────
-type RoleRow = { id: number; key: string; label: string; description: string | null; pages: string[]; apiPrefixes: string[] };
-const rolesByKey = new Map<string, RoleRow>();
-
-const seedRoles = async (): Promise<void> => {
-  for (const def of ROLE_DEFS) {
-    const row = await prisma.role.upsert({
-      where: { key: def.key },
-      create: {
-        key: def.key,
-        label: def.label,
-        description: def.description,
-        pages: def.pages as unknown as Prisma.InputJsonValue,
-        apiPrefixes: def.apiPrefixes as unknown as Prisma.InputJsonValue
-      },
-      update: {
-        label: def.label,
-        description: def.description,
-        pages: def.pages as unknown as Prisma.InputJsonValue,
-        apiPrefixes: def.apiPrefixes as unknown as Prisma.InputJsonValue
-      }
-    });
-    rolesByKey.set(def.key, {
-      id: row.id,
-      key: row.key,
-      label: row.label,
-      description: row.description,
-      pages: (row.pages as string[]) ?? [],
-      apiPrefixes: (row.apiPrefixes as string[]) ?? []
-    });
-  }
-};
-
+// Roles live in the `roles` table and are installed by the seed script. This
+// ensures the console's primary admin user exists against the system role
+// (isSystem=true, typically holds users:write). No-op until roles are seeded.
 const ensurePrimaryAdmin = async (): Promise<void> => {
-  const adminRole = rolesByKey.get("admin");
+  const adminRole = await prisma.role.findFirst({ where: { isSystem: true }, orderBy: { label: "asc" } });
+  if (!adminRole) {
+    app.log.warn("no system role found; run the seed script to install roles before creating the primary admin");
+    return;
+  }
   await prisma.user.upsert({
     where: { email: PRIMARY_ADMIN.email },
     create: {
       id: PRIMARY_ADMIN.id,
       email: PRIMARY_ADMIN.email,
       passwordHash: "seed-password-hash",
-      role: "admin",
-      roleId: adminRole?.id ?? null,
+      role: adminRole.label,
+      roleId: adminRole.id,
       fullName: PRIMARY_ADMIN.fullName,
       region: "Global",
       status: "active"
     },
-    update: { role: "admin", roleId: adminRole?.id ?? null, fullName: PRIMARY_ADMIN.fullName }
-  });
-  await prisma.adminProfile.upsert({
-    where: { userId: PRIMARY_ADMIN.id },
-    create: {
-      userId: PRIMARY_ADMIN.id,
-      accessLevel: "owner",
-      managedRegions: ["Global"] as unknown as Prisma.InputJsonValue,
-      canManageUsers: true,
-      notes: "Primary console administrator"
-    },
-    update: { accessLevel: "owner", canManageUsers: true }
+    update: {
+      role: adminRole.label,
+      roleId: adminRole.id,
+      fullName: PRIMARY_ADMIN.fullName
+    }
   });
 };
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 type UserWithRole = Prisma.UserGetPayload<{ include: { roleRef: true } }>;
+
+const rolePermissions = (role: { permissions: unknown } | null | undefined): string[] =>
+  (role?.permissions as string[] | undefined) ?? [];
 
 const publicUser = (u: UserWithRole) => ({
   id: u.id,
@@ -117,6 +89,7 @@ const publicUser = (u: UserWithRole) => ({
   roleId: u.roleId,
   label: u.roleRef?.label ?? u.role,
   pages: (u.roleRef?.pages as string[] | undefined) ?? [],
+  permissions: rolePermissions(u.roleRef),
   fullName: u.fullName,
   phone: u.phone,
   employeeId: u.employeeId,
@@ -126,11 +99,28 @@ const publicUser = (u: UserWithRole) => ({
   createdAt: u.createdAt
 });
 
+const accessTokenFor = (u: UserWithRole) =>
+  signAccessToken({
+    sub: u.id,
+    email: u.email,
+    role: u.role,
+    roleId: u.roleId,
+    permissions: rolePermissions(u.roleRef)
+  });
+
 // Refresh tokens are opaque random strings; only their SHA-256 fingerprint is
 // persisted so a leaked DB row cannot be replayed as a valid session.
 const issueRefreshToken = async (userId: string): Promise<string> => {
   const raw = newOpaqueToken();
-  await prisma.authToken.create({ data: { id: crypto.randomUUID(), userId, kind: "refresh", token: hashToken(raw) } });
+  await prisma.authToken.create({
+    data: {
+      id: crypto.randomUUID(),
+      userId,
+      kind: "refresh",
+      token: hashToken(raw),
+      expiresAt: refreshExpiresAt()
+    }
+  });
   return raw;
 };
 
@@ -139,61 +129,122 @@ const profileSchema = z.object({
   phone: z.string().optional(),
   employeeId: z.string().optional(),
   region: z.string().optional(),
-  status: z.string().optional(),
-  accessLevel: z.string().optional(),
-  managedRegions: z.array(z.string()).optional(),
-  canManageUsers: z.boolean().optional(),
-  notes: z.string().optional()
+  status: z.string().optional()
 });
-
-const roleKey = z.string().refine((k) => k in ROLE_BY_KEY, "unknown role");
 
 const createUserSchema = profileSchema.extend({
   email: z.string().email(),
   password: z.string().min(8),
-  role: roleKey
+  roleId: z.string().uuid()
 });
 
-const upsertAdminProfile = async (userId: string, p: z.infer<typeof profileSchema>): Promise<void> => {
-  await prisma.adminProfile.upsert({
-    where: { userId },
-    create: {
-      userId,
-      accessLevel: p.accessLevel ?? "standard",
-      managedRegions: (p.managedRegions ?? []) as unknown as Prisma.InputJsonValue,
-      canManageUsers: p.canManageUsers ?? true,
-      notes: p.notes ?? null
-    },
-    update: {
-      ...(p.accessLevel ? { accessLevel: p.accessLevel } : {}),
-      ...(p.managedRegions ? { managedRegions: p.managedRegions as unknown as Prisma.InputJsonValue } : {}),
-      ...(p.canManageUsers !== undefined ? { canManageUsers: p.canManageUsers } : {}),
-      ...(p.notes !== undefined ? { notes: p.notes } : {})
-    }
-  });
-};
+const updateUserSchema = profileSchema.extend({ roleId: z.string().uuid().optional() });
+
+const permissionSchema = z
+  .string()
+  .refine((p): p is Permission => (ALL_PERMISSIONS as readonly string[]).includes(p), "unknown permission");
+
+const roleBodySchema = z.object({
+  label: z.string().min(1),
+  description: z.string().optional(),
+  pages: z.array(z.string()).optional(),
+  apiPrefixes: z.array(z.string()).optional(),
+  permissions: z.array(permissionSchema).optional()
+});
+
+// Resolves the role assigned to a user. Users reference roles by id; the role's
+// label is denormalized onto User.role for display/back-compat.
+const findRole = (id: string) => prisma.role.findUnique({ where: { id } });
+
+const publicRole = (r: {
+  id: string;
+  label: string;
+  description: string | null;
+  pages: unknown;
+  apiPrefixes: unknown;
+  permissions: unknown;
+  isSystem: boolean;
+}) => ({
+  id: r.id,
+  label: r.label,
+  description: r.description,
+  pages: (r.pages as string[] | undefined) ?? [],
+  apiPrefixes: (r.apiPrefixes as string[] | undefined) ?? [],
+  permissions: (r.permissions as string[] | undefined) ?? [],
+  isSystem: r.isSystem
+});
 
 app.get("/health", async () => ({ ok: true, service: "user-service" }));
 
-// ── roles policy (consumed by the gateway) ──────────────────────────────────
-app.get("/roles", async () => ({
-  items: ROLE_DEFS.map((def) => {
-    const row = rolesByKey.get(def.key);
-    return {
-      id: row?.id ?? null,
-      key: def.key,
-      label: def.label,
-      description: def.description,
-      pages: def.pages,
-      apiPrefixes: def.apiPrefixes
-    };
-  })
-}));
+// ── role management (gateway loads /roles for its policy; CRUD is admin-only) ─
+app.get("/roles", async () => {
+  const roles = await prisma.role.findMany({ orderBy: { label: "asc" } });
+  return { items: roles.map(publicRole) };
+});
+
+app.post("/roles", async (request) => {
+  const payload = roleBodySchema.parse(request.body);
+  const role = await prisma.role.create({
+    data: {
+      label: payload.label,
+      description: payload.description ?? null,
+      pages: (payload.pages ?? []) as unknown as Prisma.InputJsonValue,
+      apiPrefixes: (payload.apiPrefixes ?? []) as unknown as Prisma.InputJsonValue,
+      permissions: (payload.permissions ?? []) as unknown as Prisma.InputJsonValue
+    }
+  });
+  return publicRole(role);
+});
+
+app.patch("/roles/:id", async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const payload = roleBodySchema.partial().parse(request.body ?? {});
+  const existing = await prisma.role.findUnique({ where: { id } });
+  if (!existing) {
+    reply.code(404);
+    return { ok: false, error: "Role not found" };
+  }
+  const role = await prisma.role.update({
+    where: { id },
+    data: {
+      ...(payload.label !== undefined ? { label: payload.label } : {}),
+      ...(payload.description !== undefined ? { description: payload.description } : {}),
+      ...(payload.pages !== undefined ? { pages: payload.pages as unknown as Prisma.InputJsonValue } : {}),
+      ...(payload.apiPrefixes !== undefined ? { apiPrefixes: payload.apiPrefixes as unknown as Prisma.InputJsonValue } : {}),
+      ...(payload.permissions !== undefined ? { permissions: payload.permissions as unknown as Prisma.InputJsonValue } : {})
+    }
+  });
+  return publicRole(role);
+});
+
+app.delete("/roles/:id", async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const existing = await prisma.role.findUnique({ where: { id } });
+  if (!existing) {
+    reply.code(404);
+    return { ok: false, error: "Role not found" };
+  }
+  if (existing.isSystem) {
+    reply.code(409);
+    return { ok: false, error: "System roles cannot be deleted" };
+  }
+  const inUse = await prisma.user.count({ where: { roleId: id } });
+  if (inUse > 0) {
+    reply.code(409);
+    return { ok: false, error: `Role is assigned to ${inUse} user(s)` };
+  }
+  await prisma.role.delete({ where: { id } }).catch(() => undefined);
+  return { ok: true };
+});
 
 // ── auth ─────────────────────────────────────────────────────────────────────
-app.post("/auth/register", async (request) => {
+app.post("/auth/register", async (request, reply) => {
   const payload = createUserSchema.parse(request.body);
-  const role = rolesByKey.get(payload.role);
+  const role = await findRole(payload.roleId);
+  if (!role) {
+    reply.code(400);
+    return { ok: false, error: "Unknown roleId" };
+  }
   const id = crypto.randomUUID();
   const user = await prisma.user.upsert({
     where: { email: payload.email },
@@ -201,18 +252,17 @@ app.post("/auth/register", async (request) => {
       id,
       email: payload.email,
       passwordHash: hashPassword(payload.password),
-      role: payload.role,
-      roleId: role?.id ?? null,
+      role: role.label,
+      roleId: role.id,
       fullName: payload.fullName ?? null,
       phone: payload.phone ?? null,
       employeeId: payload.employeeId ?? null,
       region: payload.region ?? null,
       status: payload.status ?? "active"
     },
-    update: { role: payload.role, roleId: role?.id ?? null },
+    update: { role: role.label, roleId: role.id },
     include: { roleRef: true }
   });
-  if (payload.role === "admin") await upsertAdminProfile(user.id, payload);
   return publicUser(user);
 });
 
@@ -231,7 +281,7 @@ app.post("/auth/login", async (request, reply) => {
     return { ok: false, error: "Invalid email or password" };
   }
   await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
-  const accessToken = signAccessToken({ sub: user.id, email: user.email, role: user.role, roleId: user.roleId });
+  const accessToken = accessTokenFor(user);
   const refreshToken = await issueRefreshToken(user.id);
   return { ok: true, accessToken, refreshToken, user: publicUser(user) };
 });
@@ -244,9 +294,7 @@ app.post("/auth/refresh", async (request) => {
     orderBy: { createdAt: "desc" }
   });
   if (!existing) return { accessToken: "" };
-  // Reject stale refresh tokens beyond the configured TTL.
-  const ageMs = Date.now() - existing.createdAt.getTime();
-  if (ageMs > REFRESH_TTL_DAYS * 24 * 60 * 60 * 1000) {
+  if (existing.expiresAt.getTime() <= Date.now()) {
     await prisma.authToken.delete({ where: { id: existing.id } }).catch(() => undefined);
     return { accessToken: "" };
   }
@@ -254,7 +302,7 @@ app.post("/auth/refresh", async (request) => {
   if (!user) return { accessToken: "" };
   // Rotate: revoke the presented refresh token and mint a fresh pair.
   await prisma.authToken.delete({ where: { id: existing.id } }).catch(() => undefined);
-  const accessToken = signAccessToken({ sub: user.id, email: user.email, role: user.role, roleId: user.roleId });
+  const accessToken = accessTokenFor(user);
   const refreshToken = await issueRefreshToken(user.id);
   return { accessToken, refreshToken, user: publicUser(user) };
 });
@@ -297,8 +345,7 @@ app.get("/auth/me", async (request, reply) => {
     reply.code(404);
     return { ok: false, error: "User not found" };
   }
-  const adminProfile = user.role === "admin" ? await prisma.adminProfile.findUnique({ where: { userId } }) : null;
-  return { ok: true, user: publicUser(user), adminProfile };
+  return { ok: true, user: publicUser(user) };
 });
 
 // ── admin user management (gateway restricts /users to admins) ───────────────
@@ -311,16 +358,20 @@ app.get("/users", async () => {
   return { items: users.map(publicUser) };
 });
 
-app.post("/users", async (request) => {
+app.post("/users", async (request, reply) => {
   const payload = createUserSchema.parse(request.body);
-  const role = rolesByKey.get(payload.role);
+  const role = await findRole(payload.roleId);
+  if (!role) {
+    reply.code(400);
+    return { ok: false, error: "Unknown roleId" };
+  }
   const user = await prisma.user.create({
     data: {
       id: crypto.randomUUID(),
       email: payload.email,
       passwordHash: hashPassword(payload.password),
-      role: payload.role,
-      roleId: role?.id ?? null,
+      role: role.label,
+      roleId: role.id,
       fullName: payload.fullName ?? null,
       phone: payload.phone ?? null,
       employeeId: payload.employeeId ?? null,
@@ -329,11 +380,8 @@ app.post("/users", async (request) => {
     },
     include: { roleRef: true }
   });
-  if (payload.role === "admin") await upsertAdminProfile(user.id, payload);
   return publicUser(user);
 });
-
-const updateUserSchema = profileSchema.extend({ role: roleKey.optional() });
 
 app.patch("/users/:id", async (request, reply) => {
   const { id } = request.params as { id: string };
@@ -343,11 +391,19 @@ app.patch("/users/:id", async (request, reply) => {
     reply.code(404);
     return { ok: false, error: "User not found" };
   }
-  const role = payload.role ? rolesByKey.get(payload.role) : undefined;
+  let roleData: { role: string; roleId: string } | undefined;
+  if (payload.roleId) {
+    const role = await findRole(payload.roleId);
+    if (!role) {
+      reply.code(400);
+      return { ok: false, error: "Unknown roleId" };
+    }
+    roleData = { role: role.label, roleId: role.id };
+  }
   const user = await prisma.user.update({
     where: { id },
     data: {
-      ...(payload.role ? { role: payload.role, roleId: role?.id ?? null } : {}),
+      ...(roleData ?? {}),
       ...(payload.fullName !== undefined ? { fullName: payload.fullName } : {}),
       ...(payload.phone !== undefined ? { phone: payload.phone } : {}),
       ...(payload.employeeId !== undefined ? { employeeId: payload.employeeId } : {}),
@@ -356,7 +412,6 @@ app.patch("/users/:id", async (request, reply) => {
     },
     include: { roleRef: true }
   });
-  if (user.role === "admin") await upsertAdminProfile(user.id, payload);
   return publicUser(user);
 });
 
@@ -369,8 +424,12 @@ app.delete("/users/:id", async (request) => {
 
 app.patch("/users/:id/role", async (request, reply) => {
   const { id } = request.params as { id: string };
-  const payload = z.object({ role: roleKey }).parse(request.body ?? {});
-  const role = rolesByKey.get(payload.role);
+  const payload = z.object({ roleId: z.string().uuid() }).parse(request.body ?? {});
+  const role = await findRole(payload.roleId);
+  if (!role) {
+    reply.code(400);
+    return { ok: false, error: "Unknown roleId" };
+  }
   const existing = await prisma.user.findUnique({ where: { id } });
   if (!existing) {
     reply.code(404);
@@ -378,7 +437,7 @@ app.patch("/users/:id/role", async (request, reply) => {
   }
   const user = await prisma.user.update({
     where: { id },
-    data: { role: payload.role, roleId: role?.id ?? null },
+    data: { role: role.label, roleId: role.id },
     include: { roleRef: true }
   });
   return publicUser(user);
@@ -389,7 +448,6 @@ app.post("/couriers/:userId/profile", async () => ({ ok: true }));
 app.patch("/couriers/:userId/availability", async () => ({ ok: true }));
 
 const port = Number(process.env.USER_SERVICE_PORT ?? 4001);
-await seedRoles();
 await ensurePrimaryAdmin();
 await app.listen({ port, host: "0.0.0.0" });
-app.log.info({ email: PRIMARY_ADMIN.email, roles: ROLE_DEFS.length }, "roles seeded; primary admin ensured");
+app.log.info({ email: PRIMARY_ADMIN.email }, "primary admin ensured (roles served from the roles table)");

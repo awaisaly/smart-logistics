@@ -64,7 +64,12 @@ const TARGETS: SchemaTarget[] = [
   // analytics also reads the shipment DB (cross-service analytics). This is a
   // read-only view onto shipment-service's database, so it is generate-only —
   // shipment-service owns that schema and is the only target that migrates it.
-  { dir: svc("analytics-service"), schema: "prisma/shipment.prisma", urlEnvVar: "SHIPMENT_DATABASE_URL", url: buildUrl("shipment_service", 5433, "SHIPMENT_POSTGRES_PORT"), generateOnly: true }
+  { dir: svc("analytics-service"), schema: "prisma/shipment.prisma", urlEnvVar: "SHIPMENT_DATABASE_URL", url: buildUrl("shipment_service", 5433, "SHIPMENT_POSTGRES_PORT"), generateOnly: true },
+  // temporal-service orchestrates cross-domain dispatch via direct DB/Kafka access.
+  { dir: svc("temporal-service"), schema: "prisma/shipment.prisma", urlEnvVar: "SHIPMENT_DATABASE_URL", url: buildUrl("shipment_service", 5433, "SHIPMENT_POSTGRES_PORT"), generateOnly: true },
+  { dir: svc("temporal-service"), schema: "prisma/warehouse.prisma", urlEnvVar: "WAREHOUSE_DATABASE_URL", url: buildUrl("warehouse_service", 5434, "WAREHOUSE_POSTGRES_PORT"), generateOnly: true },
+  { dir: svc("temporal-service"), schema: "prisma/courier.prisma", urlEnvVar: "COURIER_DATABASE_URL", url: buildUrl("courier_service", 5435, "COURIER_POSTGRES_PORT"), generateOnly: true },
+  { dir: svc("temporal-service"), schema: "prisma/dispatch.prisma", urlEnvVar: "DISPATCH_DATABASE_URL", url: buildUrl("dispatch_service", 5436, "DISPATCH_POSTGRES_PORT"), generateOnly: true }
 ];
 
 function runPrisma(target: SchemaTarget, args: string[]): void {
