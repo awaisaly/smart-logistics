@@ -5,6 +5,10 @@ node_modules/
 # builds
 dist/
 build/
+# accidental tsc output in src/ (build output belongs in dist/)
+packages/**/src/**/*.js
+packages/**/src/**/*.d.ts
+packages/**/src/**/*.js.map
 .turbo/
 coverage/
 *.tsbuildinfo
